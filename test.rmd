@@ -1,0 +1,83 @@
+---
+title: "Competition 1"
+author: "Tim Reznicek"
+date: "2024-3-15"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Libraries
+
+```
+
+```{r}
+# orders dataframe
+orders <- read.csv("contest1data/orders.csv")
+orders$date <- as.Date(orders$date)
+str(orders)
+
+```
+
+```{r}
+# items dataframe
+items <- read.csv("contest1data/items.csv")
+str(items)
+
+```
+
+```{r}
+# categories dataframe
+categories <- read.csv("contest1data/categories.csv")
+str(categories)
+
+```
+
+```{r}
+# test dataframe
+test <- read.csv("contest1data/test.csv")
+str(test)
+
+```
+
+
+```{r}
+# how many manufacturerIDs exist, what is the most common?
+summary(items$manufacturerID)
+mode(items$manufacturerID)
+```
+
+```{r}
+# Excluding empty values, summary of f columns
+sapply(items[, c("f1", "f2", "f3", "f4", "f5")], function(x) summary(x[x != -1]))
+```
+
+```{r}
+# how many missing values exist in each column?
+missing_counts <- sapply(items, function(x) sum(is.na(x) | x == -1 | x == ""))
+print(missing_counts)
+```
+
+```{r}
+# degree of missingness
+with(items, table(is.na(category) | category == "", f5 == -1))
+```
+
+```{r}
+# category column
+categories <- strsplit(as.character(items$category[!is.na(items$category) & items$category != ""]), ",")
+unique_categories <- unique(unlist(categories))
+category_counts <- table(unlist(categories))
+print(category_counts)
+```
+
+```{r}
+
+```
+
+
+
+
