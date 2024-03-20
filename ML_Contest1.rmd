@@ -1,0 +1,239 @@
+---
+title: "Competition 1"
+author: "Tim Reznicek"
+date: "2024-3-15"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Libraries
+if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
+library(igraph)
+library(plotly)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+```
+
+```{r}
+# orders dataframe
+orders <- read.csv("contest1data/orders.csv")
+orders$date <- as.Date(orders$date)
+str(orders)
+summary(orders)
+```
+
+```{r}
+# items dataframe
+items <- read.csv("contest1data/items.csv")
+str(items)
+
+```
+
+```{r}
+# categories dataframe
+categories <- read.csv("contest1data/categories.csv", stringsAsFactors = FALSE)
+str(categories)
+
+```
+
+```{r}
+# test dataframe
+test <- read.csv("contest1data/test.csv")
+str(test)
+summary(test)
+```
+
+
+```{r}
+# how many manufacturerIDs exist, what is the most common?
+summary(items$manufacturerID)
+mode(items$manufacturerID)
+```
+
+```{r}
+# Excluding empty values, summary of f columns
+sapply(items[, c("f1", "f2", "f3", "f4", "f5")], function(x) summary(x[x != -1]))
+```
+
+```{r}
+# how many missing values exist in each column?
+missing_counts <- sapply(items, function(x) sum(is.na(x) | x == -1 | x == ""))
+print(missing_counts)
+```
+
+```{r}
+# degree of missingness
+with(items, table(category == "", f5 == -1))
+with(items, table(category == "", f4 == -1))
+with(items, table(category == "", f3 == -1))
+with(items, table(f3 == -1, f5 == -1))
+with(items, table(f4 == -1, f5 == -1))
+with(items, table(f4 == -1, f3 == -1))
+```
+
+```{r}
+# category column
+cleaned_categories <- gsub("]", "", as.character(items$category[!is.na(items$category) & items$category != ""]))
+# Split the cleaned categories into individual categories
+categories <- strsplit(cleaned_categories, ",")
+# Now, you can proceed to find unique categories and count them as before
+unique_categories <- unique(unlist(categories))
+category_counts <- table(unlist(categories))
+
+# Print the counts of each category
+#print(category_counts)
+
+print("could reorder this to show the most represented at the top or pie chart or something.")
+```
+
+```{r}
+g <- graph_from_data_frame(d = categories, directed = TRUE)
+pdf("category_hierarchy.pdf", width = 50, height = 10)
+plot(g, layout = layout_as_tree(g), edge.arrow.size = 0.5, vertex.label = V(g)$name, vertex.size = 10, vertex.label.cex = 0.4)
+dev.off()
+```
+
+```{r}
+# Assuming 'g' is your igraph object
+coords <- layout_as_tree(g)  # Get coordinates for tree layout
+edge_x <- c(); edge_y <- c()
+for(e in E(g)){
+  # Extract the vertex ids for the ends of each edge
+  ends_ids <- ends(g, e, names = FALSE)
+  
+  # Use these ids to index into coords directly
+  edge_x <- c(edge_x, coords[ends_ids[1], 1], coords[ends_ids[2], 1], NA)
+  edge_y <- c(edge_y, coords[ends_ids[1], 2], coords[ends_ids[2], 2], NA)
+}
+
+node_x <- coords[,1]
+node_y <- coords[,2]
+text_labels <- V(g)$name
+
+# Create edges
+p <- plot_ly(type='scatter', mode='lines', x=~edge_x, y=~edge_y, line=list(color='black')) %>%
+  add_trace(x=~node_x, y=~node_y, mode='markers+text', text=~text_labels, textposition='bottom center', hoverinfo='text')
+
+# Customize layout
+p <- layout(p, title='Category Hierarchy')
+
+# Display the plot
+p
+```
+
+
+```{r}
+items_filtered <- items
+items_filtered[items_filtered == -1] <- NA  # Replace -1 with NA for filtering
+
+# Select only the columns f1 to f5
+features <- items_filtered[,c("f1", "f2", "f3", "f4", "f5")]
+
+#scatterplots of all combinations of f1 to f5
+pairs(features, panel = panel.smooth, main = "Scatterplots of Features f1 to f5")
+```
+
+Taking into account both the missingness relationships, how many values are missing in each feature, and the relationships between features, I have devised the following method to clean the features.  
+f1: make them 0  
+f2: no missing  
+f3 and f4 have high overlap in missingness
+f3: median (400 something)
+f4: median (0)
+f5: median as well, not sure if I can do any good predictions on this.  
+
+What about categories? To start out I will consider missing categories to be empty. Eventually I would like to find features related to categories and potentially fill them in that way.  
+
+### Design Matrix
+Join orders and items on itemID.  
+
+```{r}
+# Join the datasets on 'itemID'
+joined_data <- inner_join(orders, items, by = "itemID")
+```
+
+How many purchases are made by week?
+
+```{r}
+# Convert "date" column to Date type
+joined_data$date <- as.Date(joined_data$date)
+
+# Extract year and week number
+joined_data$year <- year(joined_data$date)
+joined_data$week <- week(joined_data$date)
+
+# Combine year and week for unique identification across years
+joined_data$year_week <- paste(joined_data$year, joined_data$week, sep="-")
+```
+
+```{r}
+weekly_purchases <- joined_data %>%
+  group_by(year_week) %>%
+  summarise(total_purchases = n())
+
+# View the first few rows to verify
+head(weekly_purchases)
+```
+
+```{r}
+ggplot(weekly_purchases, aes(x = year_week, y = total_purchases)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Weekly Purchases Distribution",
+       x = "Week (Year-Week Number)",
+       y = "Total Purchases")
+
+print(weekly_purchases)
+```
+
+How many test.csv purchases were never made in the training data?  
+```{r}
+# Create a unique identifier in both datasets by pasting userID and itemID
+joined_data$uid_item_comb <- paste(joined_data$userID, joined_data$itemID, sep = "_")
+test$uid_item_comb <- paste(test$userID, test$itemID, sep = "_")
+
+# Identify combinations in test_data not present in joined_data
+unique_combinations_not_in_joined <- test %>%
+  filter(!(uid_item_comb %in% joined_data$uid_item_comb))
+
+# Count the total number of unique rows
+total_unique_not_in_joined <- nrow(unique_combinations_not_in_joined)
+
+# Print the result
+print(total_unique_not_in_joined)
+```
+
+What is the breakdown by day?
+```{r}
+# Extract the day of the week
+joined_data$day_of_week <- weekdays(joined_data$date)
+# Aggregate data
+purchases_by_day <- joined_data %>%
+  group_by(day_of_week) %>%
+  summarise(total_purchases = n()) %>%
+  mutate(day_of_week = factor(day_of_week, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")))
+
+# View the result
+print(purchases_by_day)
+```
+
+```{r}
+# Plot
+ggplot(purchases_by_day, aes(x = day_of_week, y = total_purchases, fill = day_of_week)) +
+  geom_bar(stat = "identity", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Purchases Across Days of the Week",
+       x = "Day of the Week",
+       y = "Total Purchases") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), # Improve readability of x labels
+        legend.title = element_blank()) # Remove the legend title
+```
+
+
+
+
+
