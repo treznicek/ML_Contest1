@@ -233,7 +233,64 @@ ggplot(purchases_by_day, aes(x = day_of_week, y = total_purchases, fill = day_of
         legend.title = element_blank()) # Remove the legend title
 ```
 
+I will extract the target variable for the training data based on if the purchase was repeated in January. I have to change what this means though.  
+Target variable: Was the purchase made again during a 4 week window in January?  
+*January has higher purchases, this could be higher first time purchases or could be higher repeats from earlier in the year. I should answer this at some point.  
+0 - no.
+1 - first monday to sunday (1/4-1/10)
+2 - and so on (1/11-1/17)
+3 - (1/18 - 1/24)
+4 - (1/25 - 1/31)
 
+```{r}
+training_data <- joined_data[joined_data$date < as.Date("2021-01-04"),]
+#summary(training_data)
+```
+
+```{r}
+# Filter orders for January 2021
+jan_orders <- joined_data[joined_data$date >= as.Date("2021-01-04") & joined_data$date <= as.Date("2021-01-31"),]
+#summary(jan_orders)
+# Add week categories to January orders
+jan_orders$week_category <- cut(jan_orders$date,
+                                breaks = as.Date(c("2021-01-03", "2021-01-10", "2021-01-17", "2021-01-24", "2021-01-31")),
+                                labels = c("1", "2", "3", "4"),
+                                include.lowest = TRUE, 
+                                right = TRUE)
+
+# Convert 'week_category' from factors to numeric
+jan_orders$week_category_numeric <- as.numeric(as.character(jan_orders$week_category))
+
+# Now aggregate using the numeric week category
+repeat_jan_orders_summary <- aggregate(week_category_numeric ~ userID + itemID, data = jan_orders, FUN = min)
+
+# Optionally, if you want to keep the factor labels in the summary
+repeat_jan_orders_summary$week_category <- as.factor(repeat_jan_orders_summary$week_category_numeric)
+
+# Merge this summary back into your training data to create the target variable
+training_data$target <- 0  # Default to no repeat orders in January
+training_data <- merge(training_data, repeat_jan_orders_summary, by = c("userID", "itemID"), all.x = TRUE)
+training_data$target[!is.na(training_data$week_category)] <- as.numeric(as.character(training_data$week_category[!is.na(training_data$week_category)]))
+training_data$target[is.na(training_data$target)] <- 0
+```
+
+```{r}
+summary(training_data$target)
+training_data$target <- as.factor(training_data$target)
+# Create the bar chart
+ggplot(training_data, aes(x = target)) +
+  geom_bar(fill = "steelblue", color = "black", aes(y = ..count..)) +  # This plots the bars
+  geom_text(stat='count', aes(label=..count.., y=..count..), vjust=-0.5, color="black") + # This adds the count labels
+  theme_minimal() +
+  labs(title = "Distribution of Target Variable",
+       x = "Target Category",
+       y = "Count")
+```
+
+```{r}
+sample_submission <- read.csv("contest1data/sample_submission.csv")
+summary(sample_submission)
+```
 
 
 
