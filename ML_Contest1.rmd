@@ -9,7 +9,7 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
+```{r, echo=FALSE}
 # Libraries
 if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
 library(igraph)
@@ -92,38 +92,38 @@ print("could reorder this to show the most represented at the top or pie chart o
 ```
 
 ```{r}
-g <- graph_from_data_frame(d = categories, directed = TRUE)
-pdf("category_hierarchy.pdf", width = 50, height = 10)
-plot(g, layout = layout_as_tree(g), edge.arrow.size = 0.5, vertex.label = V(g)$name, vertex.size = 10, vertex.label.cex = 0.4)
-dev.off()
+# g <- graph_from_data_frame(d = categories, directed = TRUE)
+# pdf("category_hierarchy.pdf", width = 50, height = 10)
+# plot(g, layout = layout_as_tree(g), edge.arrow.size = 0.5, vertex.label = V(g)$name, vertex.size = 10, vertex.label.cex = 0.4)
+# dev.off()
 ```
 
 ```{r}
-# Assuming 'g' is your igraph object
-coords <- layout_as_tree(g)  # Get coordinates for tree layout
-edge_x <- c(); edge_y <- c()
-for(e in E(g)){
-  # Extract the vertex ids for the ends of each edge
-  ends_ids <- ends(g, e, names = FALSE)
-  
-  # Use these ids to index into coords directly
-  edge_x <- c(edge_x, coords[ends_ids[1], 1], coords[ends_ids[2], 1], NA)
-  edge_y <- c(edge_y, coords[ends_ids[1], 2], coords[ends_ids[2], 2], NA)
-}
-
-node_x <- coords[,1]
-node_y <- coords[,2]
-text_labels <- V(g)$name
-
-# Create edges
-p <- plot_ly(type='scatter', mode='lines', x=~edge_x, y=~edge_y, line=list(color='black')) %>%
-  add_trace(x=~node_x, y=~node_y, mode='markers+text', text=~text_labels, textposition='bottom center', hoverinfo='text')
-
-# Customize layout
-p <- layout(p, title='Category Hierarchy')
-
-# Display the plot
-p
+# # Assuming 'g' is your igraph object
+# coords <- layout_as_tree(g)  # Get coordinates for tree layout
+# edge_x <- c(); edge_y <- c()
+# for(e in E(g)){
+#   # Extract the vertex ids for the ends of each edge
+#   ends_ids <- ends(g, e, names = FALSE)
+#   
+#   # Use these ids to index into coords directly
+#   edge_x <- c(edge_x, coords[ends_ids[1], 1], coords[ends_ids[2], 1], NA)
+#   edge_y <- c(edge_y, coords[ends_ids[1], 2], coords[ends_ids[2], 2], NA)
+# }
+# 
+# node_x <- coords[,1]
+# node_y <- coords[,2]
+# text_labels <- V(g)$name
+# 
+# # Create edges
+# p <- plot_ly(type='scatter', mode='lines', x=~edge_x, y=~edge_y, line=list(color='black')) %>%
+#   add_trace(x=~node_x, y=~node_y, mode='markers+text', text=~text_labels, textposition='bottom center', hoverinfo='text')
+# 
+# # Customize layout
+# p <- layout(p, title='Category Hierarchy')
+# 
+# # Display the plot
+# p
 ```
 
 
@@ -147,6 +147,13 @@ f4: median (0)
 f5: median as well, not sure if I can do any good predictions on this.  
 
 What about categories? To start out I will consider missing categories to be empty. Eventually I would like to find features related to categories and potentially fill them in that way.  
+
+Join orders and items on itemID.  
+
+```{r}
+# Join the datasets on 'itemID'
+joined_data <- inner_join(orders, items, by = "itemID")
+```
 
 ### Cleaning f1-f5
 ```{r}
@@ -177,12 +184,6 @@ joined_data$day_of_week_numeric <- sapply(weekdays(joined_data$date), function(x
 
 
 ### Design Matrix
-Join orders and items on itemID.  
-
-```{r}
-# Join the datasets on 'itemID'
-joined_data <- inner_join(orders, items, by = "itemID")
-```
 
 How many purchases are made by week?
 
