@@ -12,17 +12,21 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r, echo=FALSE}
 # Libraries
 if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
+if (!require(glmnet)) install.packages("glmnet")
+library(glmnet)
 library(igraph)
 library(plotly)
 library(dplyr)
 library(lubridate)
 library(ggplot2)
+library(zoo)
+library(tidyr)
 ```
 
 ```{r}
 # orders dataframe
 orders <- read.csv("contest1data/orders.csv")
-orders$date <- as.Date(orders$date)
+orders$date <- as.Date(orders$date)      # Making sure this data is date format
 str(orders)
 summary(orders)
 ```
@@ -67,7 +71,7 @@ print(missing_counts)
 ```
 
 ```{r}
-# degree of missingness
+# missingness relation between features
 with(items, table(category == "", f5 == -1))
 with(items, table(category == "", f4 == -1))
 with(items, table(category == "", f3 == -1))
@@ -176,17 +180,161 @@ joined_data$f5[joined_data$f5 == -1] <- median_f5
 
 ### Feature Extraction from Date:
 ```{r}
-# Create a new column 'day_of_week' to store the numeric day of the week
+# create a new column 'day_of_week' to store the numeric day of the week
 joined_data$day_of_week_numeric <- sapply(weekdays(joined_data$date), function(x) {
   match(x, c("Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
 })
+
+summary(joined_data$day_of_week_numeric)
+```
+
+Add a feature for how many purchases the user has made at the point of that purchase
+```{r}
+# sort the data
+joined_data <- joined_data %>% 
+  arrange(userID, date)
+
+# calculate purchasing sum
+joined_data <- joined_data %>%
+  group_by(userID) %>%
+  mutate(user_total_purchases_up_to_date = cumsum(count)) %>%
+  ungroup()
+
+summary(joined_data$user_total_purchases_up_to_date)
+```
+
+Add a feature for how many purchases of that specific item have been made by a user
+```{r}
+# sort
+joined_data <- joined_data %>%
+  arrange(userID, itemID, date)
+
+# calculate sum o fpurchases of specific item by user
+joined_data <- joined_data %>%
+  group_by(userID, itemID) %>%
+  mutate(item_purchases_by_user = cumsum(count)) %>%
+  ungroup()
+
+summary(joined_data$item_purchases_by_user)
 ```
 
 
-### Design Matrix
+Add a feature for how many total purchases have happened for an item
+```{r}
+# sort
+joined_data <- joined_data %>%
+  arrange(itemID, date)
+
+# sum of item purchases to a date
+joined_data <- joined_data %>%
+  group_by(itemID) %>%
+  mutate(total_item_purchases_up_to_date = cumsum(count)) %>%
+  ungroup()
+
+summary(joined_data$total_item_purchases_up_to_date)
+```
+
+What is the users weekly purchase rate for an item? (consider turning this into a window)
+```{r}
+# Find the first recorded purchase date
+first_purchase_date <- min(joined_data$date)
+
+# Calculate the total weeks since the first recorded purchase for each row
+joined_data$total_weeks_since_first_purchase <- as.numeric(difftime(joined_data$date, first_purchase_date, units = "weeks")) + 1
+
+# find weeks with purchases for each user-item pair
+joined_data <- joined_data %>%
+  group_by(userID, itemID) %>%
+  mutate(week_num = floor(as.numeric(difftime(date, first_purchase_date, units = "weeks")))) %>%
+  mutate(purchase_week_flag = 1) %>%
+  distinct(userID, itemID, week_num, .keep_all = TRUE) %>%
+  ungroup()
+
+# purchase frequency for each user-item pair
+joined_data <- joined_data %>%
+  group_by(userID, itemID) %>%
+  mutate(purchase_rate = sum(purchase_week_flag) / max(total_weeks_since_first_purchase)) %>%
+  ungroup()
+
+# cleanup
+joined_data <- select(joined_data, -week_num, -purchase_week_flag)
+
+summary(joined_data$purchase_rate)
+```
+
+How many weeks since the purchase was last made? (this takes hours to complete)
+```{r}
+# sort the data
+joined_data <- joined_data %>%
+  arrange(userID, itemID, date)
+
+# weeks since last purchase for user-item was made
+joined_data <- joined_data %>%
+  group_by(userID, itemID) %>%
+  mutate(days_since_last_user_item_purchase = difftime(date, lag(date, default = first(date)), units = "days"),
+         weeks_since_last_user_item_purchase = days_since_last_user_item_purchase / 7) %>%
+  ungroup()
+
+# replace NA
+joined_data$weeks_since_last_user_item_purchase[is.na(joined_data$weeks_since_last_user_item_purchase) | joined_data$weeks_since_last_user_item_purchase == 0] <- 30
+
+# time difference should be weeks
+joined_data$weeks_since_last_user_item_purchase <- as.numeric(joined_data$weeks_since_last_user_item_purchase)
+
+summary(joined_data$weeks_since_last_user_item_purchase)
+```
+
+Has the user ever bought an item in a weekly fashion?
+(LIBRARY ZOO NEEDED)
+(DON'T USE THIS ONE, DELETES ALL MY ROWS)
+```{r}
+# sort
+joined_data <- joined_data %>% 
+  arrange(userID, itemID, date)
+
+# Calculate the week number for each purchase relative to the first purchase in the dataset
+joined_data <- joined_data %>%
+  mutate(week_num = as.integer(floor(difftime(date, min(date, na.rm = TRUE), units = "weeks"))))
+
+# Copy the original dataset to preserve all data
+original_data <- joined_data
+
+# Proceed with identifying weeks with at least one purchase
+weekly_purchases <- joined_data %>%
+  group_by(userID, itemID, week_num) %>%
+  summarise(purchase_flag = 1, .groups = 'drop') # Note: This drops extra columns
+
+# Complete the sequence for weeks and mark with purchase_flag
+weekly_purchases <- weekly_purchases %>%
+  group_by(userID, itemID) %>%
+  complete(week_num = full_seq(c(min(week_num), max(week_num)), 1),
+           fill = list(purchase_flag = 0))
+
+# Calculate consecutive purchases
+weekly_purchases <- weekly_purchases %>%
+  mutate(consecutive_purchases = if_else(rollapply(purchase_flag, width = 3, by = 1, FUN = sum, fill = 0, align = "left") == 3, 1, 0))
+
+# Flag users with three consecutive weeks of purchases
+weekly_purchases <- weekly_purchases %>%
+  group_by(userID, itemID) %>%
+  summarise(three_consecutive_weeks = max(consecutive_purchases), .groups = 'drop')
+
+# Join the flags back to the original dataset
+joined_data <- original_data %>%
+  left_join(weekly_purchases, by = c("userID", "itemID", "week_num"))
+
+summary(joined_data$three_consecutive_weeks)
+```
+
+
+```{r}
+
+```
+
+
+### Trends in the Data
 
 How many purchases are made by week?
-
 ```{r}
 # Convert "date" column to Date type
 joined_data$date <- as.Date(joined_data$date)
@@ -317,10 +465,138 @@ ggplot(training_data, aes(x = target)) +
 ```
 
 ```{r}
-# I wanted to see what the breakdown would be for the sample_submission which has a score of 0.18 our of 0.3
+# I wanted to see what the breakdown would be for the sample_submission which has a score of 0.18 out of 0.3
 sample_submission <- read.csv("contest1data/sample_submission.csv")
 summary(sample_submission)
 ```
 
 I submitted all 0s and got 0.24294  
-Next feature extract the day of the week from the training data, fill in empty values and so on.
+
+### Linear Model Training
+
+Only want to train on some features
+```{r}
+# Example list of features you want to train on
+selected_features <- c("userID", "itemID", "count", "manufacturerID", "f1", "f2", "f3", "f4", "f5", "day_of_week_numeric", "user_total_purchases_up_to_date", "item_purchases_by_user", "total_item_purchases_up_to_date", "total_weeks_since_first_purchase", "purchase_rate", "week_num", "target")
+
+# Create a new dataframe with only the selected features
+training_data_selected <- training_data[selected_features]
+
+```
+
+
+Optimize feature selection with LASSO
+```{r}
+# Create matrix of predictor variables (exclude the target variable)
+predictors <- as.matrix(training_data_selected[, -which(names(training_data_selected) == "target")])
+
+# Create a vector for the target variable
+response <- training_data_selected$target
+```
+
+Fit LASSO model
+```{r}
+set.seed(10903866) # For reproducibility
+lasso_model <- glmnet(predictors, response, alpha = 1, family = "multinomial")
+```
+
+Cross validation for optimal lamda
+```{r}
+cv_lasso <- cv.glmnet(predictors, response, alpha = 1, family = "multinomial")
+```
+
+Visualize optimal lamda and pick minimum lamda
+```{r}
+plot(cv_lasso)
+best_lambda <- cv_lasso$lambda.min  # or lambda.1se for a more regularized model
+```
+
+Optimal lamda
+```{r}
+lasso_optimal <- glmnet(predictors, response, alpha = 1, family = "multinomial", lambda = best_lambda)
+```
+
+What are the coefficients
+```{r}
+coef(lasso_optimal)
+```
+
+### Predicting Using LASSO
+
+```{r}
+# joining items with test
+test_expanded <- left_join(test, items, by = "itemID")
+```
+
+Preparing the test dataset
+```{r}
+# what is the newest date for each combination in joined_data?
+latest_joined_data <- joined_data %>%
+  group_by(userID, itemID) %>%
+  filter(date == max(date)) %>%
+  ungroup() %>%
+  select(userID, itemID, date, total_weeks_since_first_purchase, everything())
+
+# Identify columns in 'latest_joined_data' not in 'test_expanded'
+columns_to_join <- setdiff(names(latest_joined_data), names(test_expanded))
+
+# Ensure 'userID' and 'itemID' are included for the join condition
+key_columns <- c("userID", "itemID")
+join_columns <- c(key_columns, columns_to_join)
+
+# Perform the join with selected columns
+test_joined <- left_join(test_expanded, latest_joined_data[join_columns], by = key_columns)
+
+# Set default for 'total_weeks_since_first_purchase'
+test_joined$total_weeks_since_first_purchase[is.na(test_joined$total_weeks_since_first_purchase)] <- 28
+
+# Set defaults for other newly added columns
+new_columns <- setdiff(columns_to_join, key_columns)
+for(col_name in new_columns) {
+  if(col_name != "total_weeks_since_first_purchase") { # Assuming default is 0 for these
+    test_joined[[col_name]][is.na(test_joined[[col_name]])] <- 0
+  }
+}
+
+head(test_joined)
+```
+
+Predict!
+```{r}
+predictors_names <- colnames(predictors)  # or manually list them if you've kept track
+
+# Select the predictors from 'test_joined'
+test_predictors <- as.matrix(test_joined[predictors_names])
+
+# If you want the predicted class directly
+predictions_class <- predict(lasso_optimal, newx = test_predictors, type = "class")
+
+test_joined$target <- as.numeric(predictions_class)  # Convert to numeric and adjust range if needed
+
+# Summary statistics for the target column
+summary(test_joined$target)
+```
+What do the predictions look like?
+```{r}
+ggplot(test_joined, aes(x = factor(target))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Predicted Classes", x = "Class", y = "Count")
+```
+
+Converting the resulting predictions to submission csv
+```{r}
+# Assuming 'ID' is the name of your identifier column in `test_joined`
+submission <- test_joined %>% select(uid_item_comb, target)
+
+submission <- test_joined %>%
+  # Replace underscores with dashes in uid_item_comb
+  mutate(uid_item_comb = gsub("_", "-", uid_item_comb)) %>%
+  # Select and rename columns
+  select(ID = uid_item_comb, target)
+
+write.csv(submission, "submission.csv", row.names = FALSE)
+```
+
+
+
+
