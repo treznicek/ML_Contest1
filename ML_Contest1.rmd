@@ -598,5 +598,55 @@ write.csv(submission, "submission.csv", row.names = FALSE)
 ```
 
 
+### New Matrix Design
+Matrix for each unique itemID and userID combinations
+```{r}
+# Extract unique userID and itemID combinations
+training_matrix <- orders %>%
+  distinct(userID, itemID)
+```
+
+how many of an item has the user bought?
+```{r}
+# calculate total purchases
+total_purchases <- orders %>%
+  group_by(userID, itemID) %>%
+  summarise(total_count = sum(count, na.rm = TRUE)) %>%
+  ungroup()
+
+# group back into training
+training_matrix <- left_join(training_matrix, total_purchases, by = c("userID", "itemID"))
+
+# handle any na's
+training_matrix$total_count[is.na(training_matrix$total_count)] <- 0
+
+summary(training_matrix$total_count)
+```
+
+how many weeks has the user made this purchase?
+```{r}
+# week num
+orders <- orders %>%
+  mutate(date = as.Date(date), # Ensure date is in Date format
+         week_num = isoweek(date)) # Extract ISO week number
+
+# unique purchase weeks
+user_item_weeks <- orders %>%
+  group_by(userID, itemID) %>%
+  summarise(unique_purchase_weeks = n_distinct(week_num)) %>%
+  ungroup()
+
+# join and handle na's
+training_matrix <- left_join(training_matrix, user_item_weeks, by = c("userID", "itemID"))
+training_matrix$unique_purchase_weeks[is.na(training_matrix$unique_purchase_weeks)] <- 0
+
+summary(training_matrix$unique_purchase_weeks)
+```
+
+
+```{r}
+
+```
+
 
 
