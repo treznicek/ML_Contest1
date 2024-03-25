@@ -599,17 +599,64 @@ write.csv(submission, "submission.csv", row.names = FALSE)
 
 
 ### New Matrix Design
+This matrix is made for dates earlier than 2021-01-04. Training on if the 
+item/user combos are purchased in january.
+
 Matrix for each unique itemID and userID combinations
 ```{r}
+# get dates before the last 4 weeks in Jan
+training_data <- orders[orders$date < as.Date("2021-01-04"),]
+
 # Extract unique userID and itemID combinations
-training_matrix <- orders %>%
+training_matrix <- training_data %>%
   distinct(userID, itemID)
+```
+
+```{r}
+# Filter orders for January 2021
+jan_orders <- orders[orders$date >= as.Date("2021-01-04") & orders$date <= as.Date("2021-01-31"),]
+#summary(jan_orders)
+
+# Add week categories to January orders
+jan_orders$week_category <- cut(jan_orders$date,
+                                breaks = as.Date(c("2021-01-03", "2021-01-10", "2021-01-17", "2021-01-24", "2021-01-31")),
+                                labels = c("1", "2", "3", "4"),
+                                include.lowest = TRUE, 
+                                right = TRUE)
+
+# Convert 'week_category' from factors to numeric
+jan_orders$week_category_numeric <- as.numeric(as.character(jan_orders$week_category))
+
+# Now aggregate using the numeric week category
+repeat_jan_orders_summary <- aggregate(week_category_numeric ~ userID + itemID, data = jan_orders, FUN = min)
+
+# Optionally, if you want to keep the factor labels in the summary
+repeat_jan_orders_summary$week_category <- as.factor(repeat_jan_orders_summary$week_category_numeric)
+
+# Merge this summary back into your training data to create the target variable
+training_matrix$target <- 0  # Default to no repeat orders in January
+training_matrix <- merge(training_matrix, repeat_jan_orders_summary, by = c("userID", "itemID"), all.x = TRUE)
+training_matrix$target[!is.na(training_matrix$week_category)] <- as.numeric(as.character(training_matrix$week_category[!is.na(training_matrix$week_category)]))
+training_matrix$target[is.na(training_matrix$target)] <- 0
+```
+
+```{r}
+summary(training_matrix$target)
+training_matrix$target <- as.factor(training_matrix$target)
+# Create the bar chart
+ggplot(training_matrix, aes(x = target)) +
+  geom_bar(fill = "steelblue", color = "black", aes(y = ..count..)) +  # This plots the bars
+  geom_text(stat='count', aes(label=..count.., y=..count..), vjust=-0.5, color="black") + # This adds the count labels
+  theme_minimal() +
+  labs(title = "Distribution of Target Variable",
+       x = "Target Category",
+       y = "Count")
 ```
 
 how many of an item has the user bought?
 ```{r}
 # calculate total purchases
-total_purchases <- orders %>%
+total_purchases <- training_data %>%
   group_by(userID, itemID) %>%
   summarise(total_count = sum(count, na.rm = TRUE)) %>%
   ungroup()
@@ -626,12 +673,12 @@ summary(training_matrix$total_count)
 how many weeks has the user made this purchase?
 ```{r}
 # week num
-orders <- orders %>%
+training_data <- training_data %>%
   mutate(date = as.Date(date), # Ensure date is in Date format
          week_num = isoweek(date)) # Extract ISO week number
 
 # unique purchase weeks
-user_item_weeks <- orders %>%
+user_item_weeks <- training_data %>%
   group_by(userID, itemID) %>%
   summarise(unique_purchase_weeks = n_distinct(week_num)) %>%
   ungroup()
@@ -643,10 +690,153 @@ training_matrix$unique_purchase_weeks[is.na(training_matrix$unique_purchase_week
 summary(training_matrix$unique_purchase_weeks)
 ```
 
-
+What was the latest purchase of this item by the user? (change the latest date depending on training data against January or including Jan.)
 ```{r}
+# Define the reference date
+reference_date <- as.Date("2021-01-03")
+
+# Find the most recent purchase date for each user-item combination
+recent_purchases <- training_data %>%
+  group_by(userID, itemID) %>%
+  summarise(most_recent_purchase = max(date)) %>%
+  ungroup()
+
+# weeks since recent purchase
+recent_purchases <- recent_purchases %>%
+  mutate(weeks_since_last_purchase = as.numeric(difftime(reference_date, most_recent_purchase, units = "weeks")))
+
+# join into training matrix
+training_matrix <- left_join(training_matrix, recent_purchases, by = c("userID", "itemID"))
+
+# Replace NA values with 40
+training_matrix$weeks_since_last_purchase[is.na(training_matrix$weeks_since_last_purchase)] <- 40
+
+# Optionally remove the 'most_recent_purchase' column if it's no longer needed
+training_matrix <- select(training_matrix, -most_recent_purchase)
+
+summary(training_matrix$weeks_since_last_purchase)
+```
+
+What is the average time between purchases of this item by the user?
+```{r}
+# sort
+training_data <- training_data %>%
+  arrange(userID, itemID, date)
+
+# time intervals between purchases
+training_data <- training_data %>%
+  group_by(userID, itemID) %>%
+  mutate(weeks_between_purchases = difftime(date, lag(date), units = "weeks")) %>%
+  ungroup()
+
+# avg weeks between purchases
+average_weeks_between_purchases <- training_data %>%
+  group_by(userID, itemID) %>%
+  summarise(average_weeks = mean(weeks_between_purchases, na.rm = TRUE)) %>%
+  ungroup()
+
+# replace single purchases and NAs
+average_weeks_between_purchases <- average_weeks_between_purchases %>%
+  mutate(average_weeks = ifelse(is.na(average_weeks) | average_weeks == 0, 40, average_weeks))
+
+# back into the training matrix
+training_matrix <- left_join(training_matrix, average_weeks_between_purchases, by = c("userID", "itemID"))
+
+# Assign 40 to user-item pairs with no purchases (thus no row in average_weeks_between_purchases and resulted in NA after the join)
+training_matrix$average_weeks[is.na(training_matrix$average_weeks)] <- 40
+
+summary(training_matrix$average_weeks)
+```
+
+
+### LASSO Training
+
+Only want to train on some features
+```{r}
+# Example list of features you want to train on
+selected_features <- c("userID", "itemID", "target", "total_count", "unique_purchase_weeks", "weeks_since_last_purchase", "average_weeks")
+
+# Create a new dataframe with only the selected features
+training_data_selected <- training_matrix[selected_features]
 
 ```
 
 
+Optimize feature selection with LASSO
+```{r}
+# Create matrix of predictor variables (exclude the target variable)
+predictors <- as.matrix(training_data_selected[, -which(names(training_data_selected) == "target")])
 
+# Create a vector for the target variable
+response <- training_data_selected$target
+```
+
+Fit LASSO model
+```{r}
+set.seed(10903866) # For reproducibility
+lasso_model <- glmnet(predictors, response, alpha = 1, family = "multinomial")
+```
+
+Cross validation for optimal lamda
+```{r}
+cv_lasso <- cv.glmnet(predictors, response, alpha = 1, family = "multinomial")
+```
+
+Visualize optimal lamda and pick minimum lamda
+```{r}
+plot(cv_lasso)
+best_lambda <- cv_lasso$lambda.min  # or lambda.1se for a more regularized model
+```
+
+Optimal lamda
+```{r}
+lasso_optimal <- glmnet(predictors, response, alpha = 1, family = "multinomial", lambda = best_lambda)
+```
+
+What are the coefficients
+```{r}
+coef(lasso_optimal)
+```
+
+### Predict Using LASSO and New Matrix
+
+Preparing the test dataset
+```{r}
+# test needs to be joined with the matrix that is formed on January data as well...
+```
+
+Predict!
+```{r}
+predictors_names <- colnames(predictors)  # or manually list them if you've kept track
+
+# Select the predictors from 'test_joined'
+test_predictors <- as.matrix(test_joined[predictors_names])
+
+# If you want the predicted class directly
+predictions_class <- predict(lasso_optimal, newx = test_predictors, type = "class")
+
+test_joined$target <- as.numeric(predictions_class)  # Convert to numeric and adjust range if needed
+
+# Summary statistics for the target column
+summary(test_joined$target)
+```
+What do the predictions look like?
+```{r}
+ggplot(test_joined, aes(x = factor(target))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Predicted Classes", x = "Class", y = "Count")
+```
+
+Converting the resulting predictions to submission csv
+```{r}
+# Assuming 'ID' is the name of your identifier column in `test_joined`
+submission <- test_joined %>% select(uid_item_comb, target)
+
+submission <- test_joined %>%
+  # Replace underscores with dashes in uid_item_comb
+  mutate(uid_item_comb = gsub("_", "-", uid_item_comb)) %>%
+  # Select and rename columns
+  select(ID = uid_item_comb, target)
+
+write.csv(submission, "submission.csv", row.names = FALSE)
+```
