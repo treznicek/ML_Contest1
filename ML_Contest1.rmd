@@ -712,7 +712,7 @@ training_matrix <- left_join(training_matrix, recent_purchases, by = c("userID",
 training_matrix$weeks_since_last_purchase[is.na(training_matrix$weeks_since_last_purchase)] <- 40
 
 # Optionally remove the 'most_recent_purchase' column if it's no longer needed
-training_matrix <- select(training_matrix, -most_recent_purchase)
+training_matrix <- dplyr::select(training_matrix, -most_recent_purchase)
 
 summary(training_matrix$weeks_since_last_purchase)
 ```
@@ -723,29 +723,76 @@ What is the average time between purchases of this item by the user?
 training_data <- training_data %>%
   arrange(userID, itemID, date)
 
-# time intervals between purchases
+# Calculate the time difference in weeks between purchases
 training_data <- training_data %>%
   group_by(userID, itemID) %>%
-  mutate(weeks_between_purchases = difftime(date, lag(date), units = "weeks")) %>%
-  ungroup()
+  mutate(time_diff = c(NA, diff(date) / 7)) %>%
+  ungroup() # Ensure to ungroup after mutation
+  # group_by(userID, itemID) %>%
+  # mutate(weeks_between_purchases = difftime(date, lag(date), units = "weeks")) %>%
+  # ungroup()
 
-# avg weeks between purchases
+# Calculate the average time in weeks between purchases
 average_weeks_between_purchases <- training_data %>%
   group_by(userID, itemID) %>%
-  summarise(average_weeks = mean(weeks_between_purchases, na.rm = TRUE)) %>%
+  summarise(avg_time_between_purchases = mean(time_diff, na.rm = TRUE)) %>%
   ungroup()
+  # group_by(userID, itemID) %>%
+  # summarise(average_weeks = mean(weeks_between_purchases, na.rm = TRUE)) %>%
+  # ungroup()
 
 # replace single purchases and NAs
 average_weeks_between_purchases <- average_weeks_between_purchases %>%
-  mutate(average_weeks = ifelse(is.na(average_weeks) | average_weeks == 0, 40, average_weeks))
+  mutate(avg_time_between_purchases = ifelse(is.na(avg_time_between_purchases) | avg_time_between_purchases == 0, 40, avg_time_between_purchases))
 
 # back into the training matrix
 training_matrix <- left_join(training_matrix, average_weeks_between_purchases, by = c("userID", "itemID"))
 
-# Assign 40 to user-item pairs with no purchases (thus no row in average_weeks_between_purchases and resulted in NA after the join)
-training_matrix$average_weeks[is.na(training_matrix$average_weeks)] <- 40
+# handling nas after joining
+#training_matrix$avg_time_between_purchases[is.na(training_matrix$avg_time_between_purchases)] <- 40
 
-summary(training_matrix$average_weeks)
+# Assign 40 to user-item pairs with no purchases (thus no row in average_weeks_between_purchases and resulted in NA after the join)
+summary(training_matrix$avg_time_between_purchases)
+```
+
+Has the user bought this item more than once?
+```{r}
+# Count purchases per User-Item Combo
+purchase_counts <- orders %>%
+  group_by(userID, itemID) %>%
+  summarise(purchase_count = n()) %>%
+  ungroup()
+
+# binary indicator for multiple purchases
+purchase_counts <- purchase_counts %>%
+  mutate(multiple_purchases = if_else(purchase_count > 1, 1, 0))
+
+# join back
+training_matrix <- left_join(training_matrix, purchase_counts %>% dplyr::select(userID, itemID, multiple_purchases), by = c("userID", "itemID"))
+
+# handle NAs
+training_matrix$multiple_purchases[is.na(training_matrix$multiple_purchases)] <- 0
+
+summary(training_matrix$multiple_purchases)
+
+```
+
+Has the user bought this item in December?
+```{r}
+# Filter for purchases made in December
+december_purchases <- orders %>%
+  filter(month(date) == 12) %>%
+  distinct(userID, itemID) # Get unique user-item pairs for December
+
+# Add a binary indicator for December purchases
+december_purchases <- december_purchases %>%
+  mutate(purchased_in_december = 1)
+
+training_matrix <- left_join(training_matrix, december_purchases %>% dplyr::select(userID, itemID, purchased_in_december), by = c("userID", "itemID"))
+
+training_matrix$purchased_in_december[is.na(training_matrix$purchased_in_december)] <- 0
+
+summary(training_matrix$purchased_in_december)
 ```
 
 
@@ -754,7 +801,7 @@ summary(training_matrix$average_weeks)
 Only want to train on some features
 ```{r}
 # Example list of features you want to train on
-selected_features <- c("userID", "itemID", "target", "total_count", "unique_purchase_weeks", "weeks_since_last_purchase", "average_weeks")
+selected_features <- c("userID", "itemID", "target", "total_count", "unique_purchase_weeks", "weeks_since_last_purchase", "avg_time_between_purchases", "multiple_purchases", "purchased_in_december")
 
 # Create a new dataframe with only the selected features
 training_data_selected <- training_matrix[selected_features]
@@ -765,20 +812,16 @@ training_data_selected <- training_matrix[selected_features]
 Optimize feature selection with LASSO
 ```{r}
 # Create matrix of predictor variables (exclude the target variable)
-predictors <- as.matrix(training_data_selected[, -which(names(training_data_selected) == "target")])
+predictors <- dplyr::select(training_data_selected, -target) %>% as.matrix()
 
 # Create a vector for the target variable
 response <- training_data_selected$target
-```
-
-Fit LASSO model
-```{r}
-set.seed(10903866) # For reproducibility
-lasso_model <- glmnet(predictors, response, alpha = 1, family = "multinomial")
+response <- factor(response, levels = c(0, 1, 2, 3, 4))  # Adjust levels accordingly
 ```
 
 Cross validation for optimal lamda
 ```{r}
+set.seed(10903866) 
 cv_lasso <- cv.glmnet(predictors, response, alpha = 1, family = "multinomial")
 ```
 
@@ -840,3 +883,31 @@ submission <- test_joined %>%
 
 write.csv(submission, "submission.csv", row.names = FALSE)
 ```
+
+
+### Asking some questions for data integrity
+How many purchases in test exist during January?
+```{r}
+# Filter for January purchases
+january_orders <- orders %>%
+  filter(month(date) == 1)
+
+january_combinations <- january_orders %>%
+  distinct(userID, itemID)
+
+# Add a flag to indicate presence in January orders
+test_with_january_flag <- test %>%
+  mutate(in_january = ifelse(paste(userID, itemID) %in% paste(january_combinations$userID, january_combinations$itemID), 1, 0))
+
+percentage_in_january <- mean(test_with_january_flag$in_january) * 100
+
+print(paste("Percentage of test combinations present in December orders:", percentage_in_january, "%"))
+
+```
+
+```{r}
+percentages <- c()
+```
+
+
+
