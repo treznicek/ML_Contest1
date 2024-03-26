@@ -21,6 +21,8 @@ library(lubridate)
 library(ggplot2)
 library(zoo)
 library(tidyr)
+library(broom)
+library(randomForest)
 ```
 
 ```{r}
@@ -758,7 +760,7 @@ summary(training_matrix$avg_time_between_purchases)
 Has the user bought this item more than once?
 ```{r}
 # Count purchases per User-Item Combo
-purchase_counts <- orders %>%
+purchase_counts <- training_data %>%
   group_by(userID, itemID) %>%
   summarise(purchase_count = n()) %>%
   ungroup()
@@ -795,6 +797,106 @@ training_matrix$purchased_in_december[is.na(training_matrix$purchased_in_decembe
 summary(training_matrix$purchased_in_december)
 ```
 
+Is this item associated with repeat purchases?
+```{r}
+# Calculate the number of purchases for each user-item combination
+user_item_purchases <- training_data %>%
+  group_by(userID, itemID) %>%
+  summarise(purchase_count = n()) %>%
+  ungroup()
+
+# Determine if each purchase was a repeat purchase (more than once)
+user_item_purchases <- user_item_purchases %>%
+  mutate(repeat_purchase = if_else(purchase_count > 1, 1, 0))
+
+# Calculate repeat purchase frequency for each item
+item_repeat_frequency <- user_item_purchases %>%
+  group_by(itemID) %>%
+  summarise(repeat_purchase_score = sum(repeat_purchase) / n()) %>%
+  ungroup()
+
+# join back
+training_matrix <- left_join(training_matrix, item_repeat_frequency, by = "itemID")
+
+training_matrix$repeat_purchase_score[is.na(training_matrix$repeat_purchase_score)] <- 0
+
+summary(training_matrix$repeat_purchase_score)
+```
+
+What is the linear trend in popularity of the item?
+```{r}
+# prep
+training_data <- training_data %>%
+  mutate(date = as.Date(date, format = "%Y-%m-%d"),
+         year_month = format(date, "%Y-%m"))
+
+# count purchases by item and month
+monthly_purchases <- training_data %>%
+  group_by(itemID, year_month) %>%
+  summarise(purchase_count = n(), .groups = 'drop')
+
+# Assuming the date column is already in the correct format
+monthly_purchases <- monthly_purchases %>%
+  mutate(month_index = as.Date(paste0(year_month, "-01")),
+         time_index = as.numeric(difftime(month_index, min(month_index), units = "days")) / 30)  # Approximate to convert days to months
+
+# fit linear model for each item
+item_trends <- monthly_purchases %>%
+  group_by(itemID) %>%
+  do(tidy(lm(purchase_count ~ time_index, data = .))) %>%
+  ungroup()
+
+# interpret slope info
+slope_info <- item_trends %>%
+  filter(term == "time_index") %>%
+  select(itemID, estimate)
+
+# slope info back into data frame
+training_matrix <- left_join(training_matrix, slope_info, by = "itemID")
+training_matrix$estimate[is.na(training_matrix$estimate)] <- 0
+
+
+summary(training_matrix$estimate)
+```
+
+How long ago has the user bought anything?
+Specific part of the month for purchases (item, user, item+user?)
+```{r}
+
+```
+
+#### Do we want to balance the matrix target 0 values?
+```{r}
+# Rows where target is not 0
+rows_with_nonzero_target <- training_matrix %>%
+  filter(target != 0)
+
+# Rows where target is 0
+rows_with_zero_target <- training_matrix %>%
+  filter(target == 0)
+
+# Check if the number of rows is greater than 8000
+if(nrow(rows_with_zero_target) > 8000) {
+  rows_with_zero_target_sampled <- sample_n(rows_with_zero_target, 8000)
+} else {
+  rows_with_zero_target_sampled <- rows_with_zero_target
+}
+
+# combine back rows
+training_matrix_updated <- bind_rows(rows_with_nonzero_target, rows_with_zero_target_sampled)
+
+# verify
+training_matrix_updated$target <- as.factor(training_matrix_updated$target)
+# Create the bar chart
+ggplot(training_matrix_updated, aes(x = target)) +
+  geom_bar(fill = "steelblue", color = "black", aes(y = ..count..)) +  # This plots the bars
+  geom_text(stat='count', aes(label=..count.., y=..count..), vjust=-0.5, color="black") + # This adds the count labels
+  theme_minimal() +
+  labs(title = "Distribution of Target Variable",
+       x = "Target Category",
+       y = "Count")
+```
+
 
 ### LASSO Training
 
@@ -816,6 +918,8 @@ predictors <- dplyr::select(training_data_selected, -target) %>% as.matrix()
 
 # Create a vector for the target variable
 response <- training_data_selected$target
+#str(training_data_selected$target)
+#summary(training_data_selected$target)
 response <- factor(response, levels = c(0, 1, 2, 3, 4))  # Adjust levels accordingly
 ```
 
@@ -833,8 +937,13 @@ best_lambda <- cv_lasso$lambda.min  # or lambda.1se for a more regularized model
 
 Optimal lamda
 ```{r}
-lasso_optimal <- glmnet(predictors, response, alpha = 1, family = "multinomial", lambda = best_lambda)
+lasso_optimal <- glmnet(predictors, response, alpha = 1, family = "multinomial", lambda = cv_lasso$lambda.1se, maxit = 200000)
 ```
+
+```{r}
+lasso_optimal <- cv.glmnet(predictors, response, alpha = 1, family = "multinomial", lambda = "lambda.min")
+```
+
 
 What are the coefficients
 ```{r}
@@ -885,7 +994,7 @@ write.csv(submission, "submission.csv", row.names = FALSE)
 ```
 
 
-### Asking some questions for data integrity
+### Asking some questions for data engineering
 How many purchases in test exist during January?
 ```{r}
 # Filter for January purchases
@@ -909,5 +1018,87 @@ print(paste("Percentage of test combinations present in December orders:", perce
 percentages <- c()
 ```
 
+How many of the proposed orders are repeated multiple times?
+```{r}
+purchase_frequencies <- orders %>%
+  group_by(userID, itemID) %>%
+  summarise(purchase_count = n()) %>%
+  ungroup()
 
+purchase_frequencies <- purchase_frequencies %>%
+  mutate(multiple_purchases = if_else(purchase_count > 1, 1, 0))
+
+test_with_purchase_info <- left_join(test, purchase_frequencies, by = c("userID", "itemID"))
+
+percentage_multiple_purchases <- mean(test_with_purchase_info$multiple_purchases, na.rm = TRUE) * 100
+
+print(paste("Percentage of test orders purchased multiple times:", percentage_multiple_purchases, "%"))
+
+ggplot(purchase_frequencies, aes(x = factor(multiple_purchases))) +
+  geom_bar(aes(y = ..prop.., group = 1), stat = "count", fill = "steelblue") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Distribution of Multiple Purchases",
+       x = "Multiple Purchases (0 = Single, 1 = Multiple)",
+       y = "Percentage of Purchases") +
+  theme_minimal()
+```
+What is the average times purchased
+```{r}
+total_purchases_per_combination <- orders %>%
+  group_by(userID, itemID) %>%
+  summarise(total_count = sum(count, na.rm = TRUE)) %>%
+  ungroup()
+
+average_purchases <- mean(total_purchases_per_combination$total_count, na.rm = TRUE)
+
+print(paste("Average amount of purchases per user-item combination:", average_purchases))
+```
+
+### Random Forest Training
+
+Select the Predictor Variables and the Target Variable
+```{r}
+# Define the columns to use as predictors
+predictor_columns <- c("column1", "column2", "column3")  # Replace these with your actual column names
+
+# Extract predictors and the target variable
+predictors <- training_matrix_updated[, predictor_columns]
+response <- training_matrix_updated$target
+```
+
+Split the Data into Training and Test Sets
+```{r}
+set.seed(123)  # For reproducibility
+sample_size <- floor(0.7 * nrow(training_matrix_updated))
+train_indices <- sample(seq_len(nrow(training_matrix_updated)), size = sample_size)
+
+train_predictors <- predictors[train_indices, ]
+train_response <- response[train_indices]
+
+test_predictors <- predictors[-train_indices, ]
+test_response <- response[-train_indices]
+```
+
+Train the Random Forest Model
+```{r}
+rf_model <- randomForest(x = train_predictors, y = train_response, ntree = 500)
+```
+
+Make Predictions and Evaluate the Model
+```{r}
+predictions <- predict(rf_model, newdata = test_predictors)
+
+# Evaluate model performance
+confusionMatrix <- table(test_response, predictions)
+print(confusionMatrix)
+
+# Calculate accuracy
+accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
+print(paste("Accuracy:", accuracy))
+```
+
+Fine-Tuning and Cross-Validation
+```{r}
+
+```
 
