@@ -690,9 +690,13 @@ Matrix for each unique itemID and userID combinations
 # get dates before the last 4 weeks in Jan
 training_data <- orders_with_category[orders_with_category$date > as.Date("2020-12-01"),]
 
-# Extract unique userID and itemID combinations
+# Extract unique userID and itemID combinations for the training matrix
 training_matrix <- training_data %>%
   distinct(userID, itemID, category)
+
+# get data to train on from pre-January
+training_data <- orders_with_category[orders_with_category$date < as.Date("2021-01-04"),]
+
 ```
 
 ```{r}
@@ -984,8 +988,8 @@ rows_with_zero_target <- training_matrix %>%
   filter(target == 0)
 
 # Check if the number of rows is greater than some value
-if(nrow(rows_with_zero_target) > 40000) {
-  rows_with_zero_target_sampled <- sample_n(rows_with_zero_target, 40000)
+if(nrow(rows_with_zero_target) > 130000) {
+  rows_with_zero_target_sampled <- sample_n(rows_with_zero_target, 130000)
 } else {
   rows_with_zero_target_sampled <- rows_with_zero_target
 }
@@ -1167,7 +1171,7 @@ print(paste("Average amount of purchases per user-item combination:", average_pu
 Select the Predictor Variables and the Target Variable
 ```{r}
 # Define the columns to use as predictors
-predictor_columns <- c("weeks_since_last_purchase", "repeat_purchase_score", "estimate", "purchase_ratio")
+predictor_columns <- c("total_count", "weeks_since_last_purchase", "repeat_purchase_score", "estimate", "purchase_ratio")
 
 # Extract predictors and the target variable
 predictors <- training_matrix_updated[, predictor_columns]
