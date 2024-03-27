@@ -13,6 +13,7 @@ knitr::opts_chunk$set(echo = TRUE)
 # Libraries
 if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
 if (!require(glmnet)) install.packages("glmnet")
+if (!requireNamespace("caret", quietly = TRUE)) install.packages("caret")
 library(glmnet)
 library(igraph)
 library(plotly)
@@ -24,7 +25,7 @@ library(tidyr)
 library(broom)
 library(randomForest)
 library(stringr)
-
+library(caret)
 ```
 
 ```{r}
@@ -56,7 +57,17 @@ str(test)
 summary(test)
 ```
 
+Taking into account both the missingness relationships, how many values are missing in each feature, and the relationships between features, I have devised the following method to clean the features.  
+f1: make them 0  
+f2: no missing  
+f3 and f4 have high overlap in missingness
+f3: median (400 something)
+f4: median (0)
+f5: median as well, not sure if I can do any good predictions on this.  
 
+What about categories? To start out I will consider missing categories to be empty. Eventually I would like to find features related to categories and potentially fill them in that way. 
+
+### Trends in the Data
 ```{r}
 # how many manufacturerIDs exist, what is the most common?
 summary(items$manufacturerID)
@@ -74,6 +85,7 @@ missing_counts <- sapply(items, function(x) sum(is.na(x) | x == -1 | x == ""))
 print(missing_counts)
 ```
 
+
 ```{r}
 # missingness relation between features
 with(items, table(category == "", f5 == -1))
@@ -85,57 +97,6 @@ with(items, table(f4 == -1, f3 == -1))
 ```
 
 ```{r}
-# category column
-cleaned_categories <- gsub("]", "", as.character(items$category[!is.na(items$category) & items$category != ""]))
-# Split the cleaned categories into individual categories
-categories <- strsplit(cleaned_categories, ",")
-# Now, you can proceed to find unique categories and count them as before
-unique_categories <- unique(unlist(categories))
-category_counts <- table(unlist(categories))
-
-# Print the counts of each category
-#print(category_counts)
-
-print("could reorder this to show the most represented at the top or pie chart or something.")
-```
-
-```{r}
-# g <- graph_from_data_frame(d = categories, directed = TRUE)
-# pdf("category_hierarchy.pdf", width = 50, height = 10)
-# plot(g, layout = layout_as_tree(g), edge.arrow.size = 0.5, vertex.label = V(g)$name, vertex.size = 10, vertex.label.cex = 0.4)
-# dev.off()
-```
-
-```{r}
-# # Assuming 'g' is your igraph object
-# coords <- layout_as_tree(g)  # Get coordinates for tree layout
-# edge_x <- c(); edge_y <- c()
-# for(e in E(g)){
-#   # Extract the vertex ids for the ends of each edge
-#   ends_ids <- ends(g, e, names = FALSE)
-#   
-#   # Use these ids to index into coords directly
-#   edge_x <- c(edge_x, coords[ends_ids[1], 1], coords[ends_ids[2], 1], NA)
-#   edge_y <- c(edge_y, coords[ends_ids[1], 2], coords[ends_ids[2], 2], NA)
-# }
-# 
-# node_x <- coords[,1]
-# node_y <- coords[,2]
-# text_labels <- V(g)$name
-# 
-# # Create edges
-# p <- plot_ly(type='scatter', mode='lines', x=~edge_x, y=~edge_y, line=list(color='black')) %>%
-#   add_trace(x=~node_x, y=~node_y, mode='markers+text', text=~text_labels, textposition='bottom center', hoverinfo='text')
-# 
-# # Customize layout
-# p <- layout(p, title='Category Hierarchy')
-# 
-# # Display the plot
-# p
-```
-
-
-```{r}
 items_filtered <- items
 items_filtered[items_filtered == -1] <- NA  # Replace -1 with NA for filtering
 
@@ -145,198 +106,6 @@ features <- items_filtered[,c("f1", "f2", "f3", "f4", "f5")]
 #scatterplots of all combinations of f1 to f5
 pairs(features, panel = panel.smooth, main = "Scatterplots of Features f1 to f5")
 ```
-
-Taking into account both the missingness relationships, how many values are missing in each feature, and the relationships between features, I have devised the following method to clean the features.  
-f1: make them 0  
-f2: no missing  
-f3 and f4 have high overlap in missingness
-f3: median (400 something)
-f4: median (0)
-f5: median as well, not sure if I can do any good predictions on this.  
-
-What about categories? To start out I will consider missing categories to be empty. Eventually I would like to find features related to categories and potentially fill them in that way.  
-
-Join orders and items on itemID.  
-
-```{r}
-# Join the datasets on 'itemID'
-joined_data <- inner_join(orders, items, by = "itemID")
-```
-
-### Cleaning f1-f5
-```{r}
-joined_data$f1[joined_data$f1 == -1] <- 0
-
-# Calculate median for f3, excluding -1
-median_f3 <- median(joined_data$f3[joined_data$f3 != -1], na.rm = TRUE)
-# Replace -1 with median in f3
-joined_data$f3[joined_data$f3 == -1] <- median_f3
-
-# f4
-median_f4 <- median(joined_data$f4[joined_data$f4 != -1], na.rm = TRUE)
-joined_data$f4[joined_data$f4 == -1] <- median_f4
-
-# f5
-median_f5 <- median(joined_data$f5[joined_data$f5 != -1], na.rm = TRUE)
-joined_data$f5[joined_data$f5 == -1] <- median_f5
-```
-
-
-### Feature Extraction from Date:
-```{r}
-# create a new column 'day_of_week' to store the numeric day of the week
-joined_data$day_of_week_numeric <- sapply(weekdays(joined_data$date), function(x) {
-  match(x, c("Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"))
-})
-
-summary(joined_data$day_of_week_numeric)
-```
-
-Add a feature for how many purchases the user has made at the point of that purchase
-```{r}
-# sort the data
-joined_data <- joined_data %>% 
-  arrange(userID, date)
-
-# calculate purchasing sum
-joined_data <- joined_data %>%
-  group_by(userID) %>%
-  mutate(user_total_purchases_up_to_date = cumsum(count)) %>%
-  ungroup()
-
-summary(joined_data$user_total_purchases_up_to_date)
-```
-
-Add a feature for how many purchases of that specific item have been made by a user
-```{r}
-# sort
-joined_data <- joined_data %>%
-  arrange(userID, itemID, date)
-
-# calculate sum o fpurchases of specific item by user
-joined_data <- joined_data %>%
-  group_by(userID, itemID) %>%
-  mutate(item_purchases_by_user = cumsum(count)) %>%
-  ungroup()
-
-summary(joined_data$item_purchases_by_user)
-```
-
-
-Add a feature for how many total purchases have happened for an item
-```{r}
-# sort
-joined_data <- joined_data %>%
-  arrange(itemID, date)
-
-# sum of item purchases to a date
-joined_data <- joined_data %>%
-  group_by(itemID) %>%
-  mutate(total_item_purchases_up_to_date = cumsum(count)) %>%
-  ungroup()
-
-summary(joined_data$total_item_purchases_up_to_date)
-```
-
-What is the users weekly purchase rate for an item? (consider turning this into a window)
-```{r}
-# Find the first recorded purchase date
-first_purchase_date <- min(joined_data$date)
-
-# Calculate the total weeks since the first recorded purchase for each row
-joined_data$total_weeks_since_first_purchase <- as.numeric(difftime(joined_data$date, first_purchase_date, units = "weeks")) + 1
-
-# find weeks with purchases for each user-item pair
-joined_data <- joined_data %>%
-  group_by(userID, itemID) %>%
-  mutate(week_num = floor(as.numeric(difftime(date, first_purchase_date, units = "weeks")))) %>%
-  mutate(purchase_week_flag = 1) %>%
-  distinct(userID, itemID, week_num, .keep_all = TRUE) %>%
-  ungroup()
-
-# purchase frequency for each user-item pair
-joined_data <- joined_data %>%
-  group_by(userID, itemID) %>%
-  mutate(purchase_rate = sum(purchase_week_flag) / max(total_weeks_since_first_purchase)) %>%
-  ungroup()
-
-# cleanup
-joined_data <- select(joined_data, -week_num, -purchase_week_flag)
-
-summary(joined_data$purchase_rate)
-```
-
-How many weeks since the purchase was last made? (this takes hours to complete)
-```{r}
-# sort the data
-joined_data <- joined_data %>%
-  arrange(userID, itemID, date)
-
-# weeks since last purchase for user-item was made
-joined_data <- joined_data %>%
-  group_by(userID, itemID) %>%
-  mutate(days_since_last_user_item_purchase = difftime(date, lag(date, default = first(date)), units = "days"),
-         weeks_since_last_user_item_purchase = days_since_last_user_item_purchase / 7) %>%
-  ungroup()
-
-# replace NA
-joined_data$weeks_since_last_user_item_purchase[is.na(joined_data$weeks_since_last_user_item_purchase) | joined_data$weeks_since_last_user_item_purchase == 0] <- 30
-
-# time difference should be weeks
-joined_data$weeks_since_last_user_item_purchase <- as.numeric(joined_data$weeks_since_last_user_item_purchase)
-
-summary(joined_data$weeks_since_last_user_item_purchase)
-```
-
-Has the user ever bought an item in a weekly fashion?
-(LIBRARY ZOO NEEDED)
-(DON'T USE THIS ONE, DELETES ALL MY ROWS)
-```{r}
-# sort
-joined_data <- joined_data %>% 
-  arrange(userID, itemID, date)
-
-# Calculate the week number for each purchase relative to the first purchase in the dataset
-joined_data <- joined_data %>%
-  mutate(week_num = as.integer(floor(difftime(date, min(date, na.rm = TRUE), units = "weeks"))))
-
-# Copy the original dataset to preserve all data
-original_data <- joined_data
-
-# Proceed with identifying weeks with at least one purchase
-weekly_purchases <- joined_data %>%
-  group_by(userID, itemID, week_num) %>%
-  summarise(purchase_flag = 1, .groups = 'drop') # Note: This drops extra columns
-
-# Complete the sequence for weeks and mark with purchase_flag
-weekly_purchases <- weekly_purchases %>%
-  group_by(userID, itemID) %>%
-  complete(week_num = full_seq(c(min(week_num), max(week_num)), 1),
-           fill = list(purchase_flag = 0))
-
-# Calculate consecutive purchases
-weekly_purchases <- weekly_purchases %>%
-  mutate(consecutive_purchases = if_else(rollapply(purchase_flag, width = 3, by = 1, FUN = sum, fill = 0, align = "left") == 3, 1, 0))
-
-# Flag users with three consecutive weeks of purchases
-weekly_purchases <- weekly_purchases %>%
-  group_by(userID, itemID) %>%
-  summarise(three_consecutive_weeks = max(consecutive_purchases), .groups = 'drop')
-
-# Join the flags back to the original dataset
-joined_data <- original_data %>%
-  left_join(weekly_purchases, by = c("userID", "itemID", "week_num"))
-
-summary(joined_data$three_consecutive_weeks)
-```
-
-
-```{r}
-
-```
-
-
-### Trends in the Data
 
 How many purchases are made by week?
 ```{r}
@@ -476,131 +245,6 @@ summary(sample_submission)
 
 I submitted all 0s and got 0.24294  
 
-### Linear Model Training
-
-Only want to train on some features
-```{r}
-# Example list of features you want to train on
-selected_features <- c("userID", "itemID", "count", "manufacturerID", "f1", "f2", "f3", "f4", "f5", "day_of_week_numeric", "user_total_purchases_up_to_date", "item_purchases_by_user", "total_item_purchases_up_to_date", "total_weeks_since_first_purchase", "purchase_rate", "week_num", "target")
-
-# Create a new dataframe with only the selected features
-training_data_selected <- training_data[selected_features]
-
-```
-
-
-Optimize feature selection with LASSO
-```{r}
-# Create matrix of predictor variables (exclude the target variable)
-predictors <- as.matrix(training_data_selected[, -which(names(training_data_selected) == "target")])
-
-# Create a vector for the target variable
-response <- training_data_selected$target
-```
-
-Fit LASSO model
-```{r}
-set.seed(10903866) # For reproducibility
-lasso_model <- glmnet(predictors, response, alpha = 1, family = "multinomial")
-```
-
-Cross validation for optimal lamda
-```{r}
-cv_lasso <- cv.glmnet(predictors, response, alpha = 1, family = "multinomial")
-```
-
-Visualize optimal lamda and pick minimum lamda
-```{r}
-plot(cv_lasso)
-best_lambda <- cv_lasso$lambda.min  # or lambda.1se for a more regularized model
-```
-
-Optimal lamda
-```{r}
-lasso_optimal <- glmnet(predictors, response, alpha = 1, family = "multinomial", lambda = best_lambda)
-```
-
-What are the coefficients
-```{r}
-coef(lasso_optimal)
-```
-
-### Predicting Using LASSO
-
-```{r}
-# joining items with test
-test_expanded <- left_join(test, items, by = "itemID")
-```
-
-Preparing the test dataset
-```{r}
-# what is the newest date for each combination in joined_data?
-latest_joined_data <- joined_data %>%
-  group_by(userID, itemID) %>%
-  filter(date == max(date)) %>%
-  ungroup() %>%
-  select(userID, itemID, date, total_weeks_since_first_purchase, everything())
-
-# Identify columns in 'latest_joined_data' not in 'test_expanded'
-columns_to_join <- setdiff(names(latest_joined_data), names(test_expanded))
-
-# Ensure 'userID' and 'itemID' are included for the join condition
-key_columns <- c("userID", "itemID")
-join_columns <- c(key_columns, columns_to_join)
-
-# Perform the join with selected columns
-test_joined <- left_join(test_expanded, latest_joined_data[join_columns], by = key_columns)
-
-# Set default for 'total_weeks_since_first_purchase'
-test_joined$total_weeks_since_first_purchase[is.na(test_joined$total_weeks_since_first_purchase)] <- 28
-
-# Set defaults for other newly added columns
-new_columns <- setdiff(columns_to_join, key_columns)
-for(col_name in new_columns) {
-  if(col_name != "total_weeks_since_first_purchase") { # Assuming default is 0 for these
-    test_joined[[col_name]][is.na(test_joined[[col_name]])] <- 0
-  }
-}
-
-head(test_joined)
-```
-
-Predict!
-```{r}
-predictors_names <- colnames(predictors)  # or manually list them if you've kept track
-
-# Select the predictors from 'test_joined'
-test_predictors <- as.matrix(test_joined[predictors_names])
-
-# If you want the predicted class directly
-predictions_class <- predict(lasso_optimal, newx = test_predictors, type = "class")
-
-test_joined$target <- as.numeric(predictions_class)  # Convert to numeric and adjust range if needed
-
-# Summary statistics for the target column
-summary(test_joined$target)
-```
-What do the predictions look like?
-```{r}
-ggplot(test_joined, aes(x = factor(target))) +
-  geom_bar(fill = "steelblue") +
-  labs(title = "Distribution of Predicted Classes", x = "Class", y = "Count")
-```
-
-Converting the resulting predictions to submission csv
-```{r}
-# Assuming 'ID' is the name of your identifier column in `test_joined`
-submission <- test_joined %>% select(uid_item_comb, target)
-
-submission <- test_joined %>%
-  # Replace underscores with dashes in uid_item_comb
-  mutate(uid_item_comb = gsub("_", "-", uid_item_comb)) %>%
-  # Select and rename columns
-  select(ID = uid_item_comb, target)
-
-write.csv(submission, "submission.csv", row.names = FALSE)
-```
-
 ### Cleaning items
 Impute missing f values
 ```{r}
@@ -681,7 +325,7 @@ head(orders_with_category)
 ```
 
 
-### New Matrix Design
+### Matrix Design
 This matrix is made for dates earlier than 2021-01-04. Training on if the 
 item/user combos are purchased in january.
 
@@ -694,7 +338,7 @@ training_data <- orders_with_category[orders_with_category$date > as.Date("2020-
 training_matrix <- training_data %>%
   distinct(userID, itemID, category)
 
-# get data to train on from pre-January
+# get data to train on from pre-January 04
 training_data <- orders_with_category[orders_with_category$date < as.Date("2021-01-04"),]
 
 ```
@@ -863,7 +507,7 @@ average_weeks_between_purchases <- average_weeks_between_purchases %>%
 training_matrix <- left_join(training_matrix, average_weeks_between_purchases, by = c("userID", "itemID"))
 
 # handling nas after joining
-#training_matrix$avg_time_between_purchases[is.na(training_matrix$avg_time_between_purchases)] <- 40
+training_matrix$avg_time_between_purchases[is.na(training_matrix$avg_time_between_purchases)] <- 40
 
 # Assign 40 to user-item pairs with no purchases (thus no row in average_weeks_between_purchases and resulted in NA after the join)
 summary(training_matrix$avg_time_between_purchases)
@@ -1126,9 +770,6 @@ print(paste("Percentage of test combinations present in December orders:", perce
 
 ```
 
-```{r}
-percentages <- c()
-```
 
 How many of the proposed orders are repeated multiple times?
 ```{r}
@@ -1171,7 +812,7 @@ print(paste("Average amount of purchases per user-item combination:", average_pu
 Select the Predictor Variables and the Target Variable
 ```{r}
 # Define the columns to use as predictors
-predictor_columns <- c("total_count", "weeks_since_last_purchase", "repeat_purchase_score", "estimate", "purchase_ratio")
+predictor_columns <- c("total_count", "weeks_since_last_purchase", "repeat_purchase_score", "estimate", "purchase_ratio", "avg_time_between_purchases")
 
 # Extract predictors and the target variable
 predictors <- training_matrix_updated[, predictor_columns]
@@ -1220,7 +861,7 @@ feature_importance <- data.frame(Feature = rownames(importance_values), Importan
 ggplot(feature_importance, aes(x = reorder(Feature, Importance), y = Importance)) +
   geom_bar(stat = "identity") +
   coord_flip() +  # Flip coordinates for horizontal layout
-  labs(title = "Feature Importance (Mean Decrease Gini)", x = "Feature", y = "Mean Decrease in Gini Impurity") +
+  labs(title = "Feature 'Importance' (Mean Decrease Gini)", x = "Feature", y = "Mean Decrease in Gini Impurity") +
   theme_minimal()
 ```
 
@@ -1231,8 +872,46 @@ tree_1 <- getTree(rf_model, k = 1, labelVar = TRUE)
 
 Fine-Tuning and Cross-Validation
 ```{r}
+# prepare training control
+train_control <- trainControl(
+  method = "cv",           # Use k-fold cross-validation
+  number = 10,             # Number of folds in k-fold cross-validation
+  search = "grid",         # Type of parameter search (grid or random)
+  savePredictions = "final", # Save predictions for the optimal model
+  allowParallel = TRUE    # Allow parallel processing if supported
+)
+
+# parameter grid
+param_grid <- expand.grid(
+  mtry = c(2, 4, 6)  # Number of variables considered at each split
+)
+
 
 ```
+
+Train model with parameter tuning and cross-validation
+```{r}
+set.seed(111)
+
+rf_tuned_model <- train(
+  x = predictors,
+  y = response,
+  method = "rf",           # Specify Random Forest method
+  trControl = train_control,
+  tuneGrid = param_grid,
+  metric = "Accuracy"      # Optimization metric (e.g., Accuracy for classification)
+)
+
+print(rf_tuned_model)
+```
+
+Model Evaluation
+```{r}
+predictions <- predict(rf_tuned_model, newdata = test_predictors)
+confMatrix <- confusionMatrix(predictions, test_response)
+print(confMatrix)
+```
+
 
 
 #### Generate the test matrix
@@ -1495,5 +1174,30 @@ ggplot(predictions_df, aes(x = Predictions)) +
 submission <- data.frame(ID = test$ID, Target = predictions_for_submission)
 write.csv(submission, "submission.csv", row.names = FALSE)
 
+```
+
+Predicting using a better model.
+```{r}
+colSums(is.na(test))
+test$category[is.na(test$category)] <- 0
+test$category_purchases[is.na(test$category_purchases)] <- 0
+test$total_purchases[is.na(test$total_purchases)] <- 0
+
+predictions_submission_better <- predict(rf_tuned_model, newdata = test)
+
+```
+
+```{r}
+predictions_df <- data.frame(Predictions = factor(predictions_submission_better))
+ggplot(predictions_df, aes(x = Predictions)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Test Predictions", x = "Predicted Class", y = "Count") +
+  theme_minimal()
+```
+
+
+```{r}
+submission <- data.frame(ID = test$ID, Target = predictions_submission_better)
+write.csv(submission, "better_submission.csv", row.names = FALSE)
 ```
 
