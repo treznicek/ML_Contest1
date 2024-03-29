@@ -9,6 +9,7 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+### Load the Libraries
 ```{r, echo=FALSE}
 # Libraries
 if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
@@ -67,7 +68,7 @@ f5: median as well, not sure if I can do any good predictions on this.
 
 What about categories? To start out I will consider missing categories to be empty. Eventually I would like to find features related to categories and potentially fill them in that way. 
 
-### Trends in the Data
+### Identifying Trends in the Data
 ```{r}
 # how many manufacturerIDs exist, what is the most common?
 summary(items$manufacturerID)
@@ -75,7 +76,7 @@ mode(items$manufacturerID)
 ```
 
 ```{r}
-# Excluding empty values, summary of f columns
+# excluding empty values, summary of f columns
 sapply(items[, c("f1", "f2", "f3", "f4", "f5")], function(x) summary(x[x != -1]))
 ```
 
@@ -97,10 +98,9 @@ with(items, table(f4 == -1, f3 == -1))
 ```
 
 ```{r}
+# filter missing features
 items_filtered <- items
-items_filtered[items_filtered == -1] <- NA  # Replace -1 with NA for filtering
-
-# Select only the columns f1 to f5
+items_filtered[items_filtered == -1] <- NA  # replace -1 with NA for filtering
 features <- items_filtered[,c("f1", "f2", "f3", "f4", "f5")]
 
 #scatterplots of all combinations of f1 to f5
@@ -109,27 +109,26 @@ pairs(features, panel = panel.smooth, main = "Scatterplots of Features f1 to f5"
 
 How many purchases are made by week?
 ```{r}
-# Convert "date" column to Date type
-joined_data$date <- as.Date(joined_data$date)
+# convert "date" column to Date type
+orders$date <- as.Date(orders$date)
 
-# Extract year and week number
-joined_data$year <- year(joined_data$date)
-joined_data$week <- week(joined_data$date)
+# year and week number
+orders$year <- year(orders$date)
+orders$week <- week(orders$date)
 
-# Combine year and week for unique identification across years
-joined_data$year_week <- paste(joined_data$year, joined_data$week, sep="-")
-```
+# combine year and week for unique identification across years
+orders$year_week <- paste(orders$year, orders$week, sep="-")
 
-```{r}
-weekly_purchases <- joined_data %>%
+# group weekly purchases
+weekly_purchases <- orders %>%
   group_by(year_week) %>%
   summarise(total_purchases = n())
 
-# View the first few rows to verify
 head(weekly_purchases)
 ```
 
 ```{r}
+# plot of weekly purchases
 ggplot(weekly_purchases, aes(x = year_week, y = total_purchases)) +
   geom_bar(stat = "identity", fill = "steelblue") +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
@@ -142,37 +141,33 @@ print(weekly_purchases)
 
 How many test.csv purchases were never made in the training data?  
 ```{r}
-# Create a unique identifier in both datasets by pasting userID and itemID
-joined_data$uid_item_comb <- paste(joined_data$userID, joined_data$itemID, sep = "_")
+# create a unique identifier in both datasets by pasting userID and itemID
+orders$uid_item_comb <- paste(orders$userID, orders$itemID, sep = "_")
 test$uid_item_comb <- paste(test$userID, test$itemID, sep = "_")
 
-# Identify combinations in test_data not present in joined_data
+# identify combinations in test_data not present in orders
 unique_combinations_not_in_joined <- test %>%
-  filter(!(uid_item_comb %in% joined_data$uid_item_comb))
+  filter(!(uid_item_comb %in% orders$uid_item_comb))
 
-# Count the total number of unique rows
 total_unique_not_in_joined <- nrow(unique_combinations_not_in_joined)
-
-# Print the result
 print(total_unique_not_in_joined)
 ```
 
 What is the breakdown by day?
 ```{r}
-# Extract the day of the week
-joined_data$day_of_week <- weekdays(joined_data$date)
-# Aggregate data
-purchases_by_day <- joined_data %>%
+# day of the week
+orders$day_of_week <- weekdays(orders$date)
+# aggregate data
+purchases_by_day <- orders %>%
   group_by(day_of_week) %>%
   summarise(total_purchases = n()) %>%
   mutate(day_of_week = factor(day_of_week, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")))
 
-# View the result
 print(purchases_by_day)
 ```
 
 ```{r}
-# Plot
+# plot
 ggplot(purchases_by_day, aes(x = day_of_week, y = total_purchases, fill = day_of_week)) +
   geom_bar(stat = "identity", color = "black") +
   theme_minimal() +
@@ -192,67 +187,15 @@ Target variable: Was the purchase made again during a 4 week window in January?
 3 - (1/18 - 1/24)
 4 - (1/25 - 1/31)
 
-```{r}
-training_data <- joined_data[joined_data$date < as.Date("2021-01-04"),]
-#summary(training_data)
-```
-
-```{r}
-# Filter orders for January 2021
-jan_orders <- joined_data[joined_data$date >= as.Date("2021-01-04") & joined_data$date <= as.Date("2021-01-31"),]
-#summary(jan_orders)
-# Add week categories to January orders
-jan_orders$week_category <- cut(jan_orders$date,
-                                breaks = as.Date(c("2021-01-03", "2021-01-10", "2021-01-17", "2021-01-24", "2021-01-31")),
-                                labels = c("1", "2", "3", "4"),
-                                include.lowest = TRUE, 
-                                right = TRUE)
-
-# Convert 'week_category' from factors to numeric
-jan_orders$week_category_numeric <- as.numeric(as.character(jan_orders$week_category))
-
-# Now aggregate using the numeric week category
-repeat_jan_orders_summary <- aggregate(week_category_numeric ~ userID + itemID, data = jan_orders, FUN = min)
-
-# Optionally, if you want to keep the factor labels in the summary
-repeat_jan_orders_summary$week_category <- as.factor(repeat_jan_orders_summary$week_category_numeric)
-
-# Merge this summary back into your training data to create the target variable
-training_data$target <- 0  # Default to no repeat orders in January
-training_data <- merge(training_data, repeat_jan_orders_summary, by = c("userID", "itemID"), all.x = TRUE)
-training_data$target[!is.na(training_data$week_category)] <- as.numeric(as.character(training_data$week_category[!is.na(training_data$week_category)]))
-training_data$target[is.na(training_data$target)] <- 0
-```
-
-```{r}
-summary(training_data$target)
-training_data$target <- as.factor(training_data$target)
-# Create the bar chart
-ggplot(training_data, aes(x = target)) +
-  geom_bar(fill = "steelblue", color = "black", aes(y = ..count..)) +  # This plots the bars
-  geom_text(stat='count', aes(label=..count.., y=..count..), vjust=-0.5, color="black") + # This adds the count labels
-  theme_minimal() +
-  labs(title = "Distribution of Target Variable",
-       x = "Target Category",
-       y = "Count")
-```
-
-```{r}
-# I wanted to see what the breakdown would be for the sample_submission which has a score of 0.18 out of 0.3
-sample_submission <- read.csv("contest1data/sample_submission.csv")
-summary(sample_submission)
-```
-
-I submitted all 0s and got 0.24294  
 
 ### Cleaning items
 Impute missing f values
 ```{r}
 items$f1[items$f1 == -1] <- 0
 
-# Calculate median for f3, excluding -1
+# median for f3, excluding -1
 median_f3 <- median(items$f3[items$f3 != -1], na.rm = TRUE)
-# Replace -1 with median in f3
+# replace -1 with median in f3
 items$f3[items$f3 == -1] <- median_f3
 
 # f4
@@ -282,21 +225,21 @@ head(items)
 
 Impute missing categories
 ```{r}
-# Rows where 'category' is NA
+# rows where 'category' is NA
 items_na <- items %>%
   filter(is.na(category))
 
-# Rows where 'category' is not NA
+# rows where 'category' is not NA
 items_not_na <- items %>%
   filter(!is.na(category))
 
 impute_category <- function(row, source_df) {
-  # Find a row in source_df that matches f1-f5 values of the input row
+  # find a row in source_df that matches f1-f5 values of the input row
   match <- source_df %>%
     filter(f1 == row$f1, f2 == row$f2, f3 == row$f3, f4 == row$f4, f5 == row$f5) %>%
-    slice(1)  # Take the first match if there are multiple
+    slice(1)  # take the first match if there are multiple
   
-  # If a match is found, return its 'category'; otherwise, return NA
+  # if a match is found, return its category otherwise, return NA
   if(nrow(match) > 0) {
     return(match$category[1])
   } else {
@@ -311,10 +254,10 @@ items_na_imputed <- items_na %>%
 
 items_imputed <- bind_rows(items_na_imputed, items_not_na)
 
-# Before imputation
+#before imputation
 sum(is.na(items$category))
 
-# After imputation
+# after imputation
 sum(is.na(items_imputed$category))
 ```
 
@@ -324,17 +267,48 @@ orders_with_category <- left_join(orders, items %>% dplyr::select(itemID, catego
 head(orders_with_category)
 ```
 
+How many categories exist?
+```{r}
+# unique category IDs
+num_unique_categories <- orders_with_category %>%
+  summarise(num_categories = n_distinct(category))
+
+print(num_unique_categories)
+
+```
+
+pie chart for visualization of categories
+```{r}
+# get category counts for top 30 represented categories
+category_counts <- orders_with_category %>%
+  count(category, sort = TRUE) %>%
+  mutate(category = if_else(row_number() <= 30, as.character(category), "Other"))
+
+# for those categorized as "Other", sum their counts and combine them into one row
+category_summary <- category_counts %>%
+  group_by(category) %>%
+  summarise(n = sum(n))
+
+# plot
+ggplot(category_summary, aes(x = "", y = n, fill = category)) +
+  geom_bar(width = 1, stat = "identity", color = "white") +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  labs(title = "Top 30 Categories and Other", fill = "Category") +
+  theme(legend.position = "right")
+```
+
+
 
 ### Matrix Design
-This matrix is made for dates earlier than 2021-01-04. Training on if the 
-item/user combos are purchased in january.
+Designed the matrix to train on userID and itemID combinations. Trying to predict January order probability.  
 
 Matrix for each unique itemID and userID combinations
 ```{r}
-# get dates before the last 4 weeks in Jan
-training_data <- orders_with_category[orders_with_category$date > as.Date("2020-11-10"),]
+# getting orders from December to January
+training_data <- orders_with_category[orders_with_category$date > as.Date("2020-12-01"),]
 
-# Extract unique userID and itemID combinations for the training matrix
+# extract unique userID and itemID combinations for the training matrix
 training_matrix <- training_data %>%
   distinct(userID, itemID, category)
 
@@ -344,27 +318,25 @@ training_data <- orders_with_category[orders_with_category$date < as.Date("2021-
 ```
 
 ```{r}
-# Filter orders for January 2021
+# orders for January 2021
 jan_orders <- orders_with_category[orders_with_category$date >= as.Date("2021-01-04") & orders_with_category$date <= as.Date("2021-01-31"),]
 #summary(jan_orders)
 
-# Add week categories to January orders
+# add week categories to January orders
 jan_orders$week_category <- cut(jan_orders$date,
                                 breaks = as.Date(c("2021-01-03", "2021-01-10", "2021-01-17", "2021-01-24", "2021-01-31")),
                                 labels = c("1", "2", "3", "4"),
                                 include.lowest = TRUE, 
                                 right = TRUE)
 
-# Convert 'week_category' from factors to numeric
+# convert 'week_category' from factors to numeric
 jan_orders$week_category_numeric <- as.numeric(as.character(jan_orders$week_category))
 
-# Now aggregate using the numeric week category
+# aggregate using the numeric week category
 repeat_jan_orders_summary <- aggregate(week_category_numeric ~ userID + itemID, data = jan_orders, FUN = min)
-
-# Optionally, if you want to keep the factor labels in the summary
 repeat_jan_orders_summary$week_category <- as.factor(repeat_jan_orders_summary$week_category_numeric)
 
-# Merge this summary back into your training data to create the target variable
+# create the target variable
 training_matrix$target <- 0  # Default to no repeat orders in January
 training_matrix <- merge(training_matrix, repeat_jan_orders_summary, by = c("userID", "itemID"), all.x = TRUE)
 training_matrix$target[!is.na(training_matrix$week_category)] <- as.numeric(as.character(training_matrix$week_category[!is.na(training_matrix$week_category)]))
@@ -450,7 +422,7 @@ summary(training_matrix$unique_purchase_weeks)
 
 What was the latest purchase of this item by the user? (change the latest date depending on training data against January or including Jan.)
 ```{r}
-# Define the reference date
+# reference date
 reference_date <- as.Date("2021-01-03")
 
 # Find the most recent purchase date for each user-item combination
@@ -468,8 +440,6 @@ training_matrix <- left_join(training_matrix, recent_purchases, by = c("userID",
 
 # Replace NA values with 40
 training_matrix$weeks_since_last_purchase[is.na(training_matrix$weeks_since_last_purchase)] <- 40
-
-# Optionally remove the 'most_recent_purchase' column if it's no longer needed
 training_matrix <- dplyr::select(training_matrix, -most_recent_purchase)
 
 summary(training_matrix$weeks_since_last_purchase)
@@ -481,7 +451,7 @@ What is the average time between purchases of this item by the user?
 training_data <- training_data %>%
   arrange(userID, itemID, date)
 
-# Calculate the time difference in weeks between purchases
+# time difference in weeks between purchases
 training_data <- training_data %>%
   group_by(userID, itemID) %>%
   mutate(time_diff = c(NA, diff(date) / 7)) %>%
@@ -490,7 +460,7 @@ training_data <- training_data %>%
   # mutate(weeks_between_purchases = difftime(date, lag(date), units = "weeks")) %>%
   # ungroup()
 
-# Calculate the average time in weeks between purchases
+# average time in weeks between purchases
 average_weeks_between_purchases <- training_data %>%
   group_by(userID, itemID) %>%
   summarise(avg_time_between_purchases = mean(time_diff, na.rm = TRUE)) %>%
@@ -509,13 +479,12 @@ training_matrix <- left_join(training_matrix, average_weeks_between_purchases, b
 # handling nas after joining
 training_matrix$avg_time_between_purchases[is.na(training_matrix$avg_time_between_purchases)] <- 40
 
-# Assign 40 to user-item pairs with no purchases (thus no row in average_weeks_between_purchases and resulted in NA after the join)
 summary(training_matrix$avg_time_between_purchases)
 ```
 
 Has the user bought this item more than once?
 ```{r}
-# Count purchases per User-Item Combo
+# purchases per User-Item Combo
 purchase_counts <- training_data %>%
   group_by(userID, itemID) %>%
   summarise(purchase_count = n()) %>%
@@ -537,12 +506,12 @@ summary(training_matrix$multiple_purchases)
 
 Has the user bought this item in December?
 ```{r}
-# Filter for purchases made in December
+# purchases made in December
 december_purchases <- orders %>%
   filter(month(date) == 12) %>%
   distinct(userID, itemID) # Get unique user-item pairs for December
 
-# Add a binary indicator for December purchases
+# binary indicator for December purchases
 december_purchases <- december_purchases %>%
   mutate(purchased_in_december = 1)
 
@@ -555,17 +524,17 @@ summary(training_matrix$purchased_in_december)
 
 Is this item associated with repeat purchases?
 ```{r}
-# Calculate the number of purchases for each user-item combination
+# number of purchases for each user-item combination
 user_item_purchases <- training_data %>%
   group_by(userID, itemID) %>%
   summarise(purchase_count = n()) %>%
   ungroup()
 
-# Determine if each purchase was a repeat purchase (more than once)
+# purchase was a repeat purchase?
 user_item_purchases <- user_item_purchases %>%
   mutate(repeat_purchase = if_else(purchase_count > 1, 1, 0))
 
-# Calculate repeat purchase frequency for each item
+# repeat purchase frequency for each item
 item_repeat_frequency <- user_item_purchases %>%
   group_by(itemID) %>%
   summarise(repeat_purchase_score = sum(repeat_purchase) / n()) %>%
@@ -591,7 +560,6 @@ monthly_purchases <- training_data %>%
   group_by(itemID, year_month) %>%
   summarise(purchase_count = n(), .groups = 'drop')
 
-# Assuming the date column is already in the correct format
 monthly_purchases <- monthly_purchases %>%
   mutate(month_index = as.Date(paste0(year_month, "-01")),
          time_index = as.numeric(difftime(month_index, min(month_index), units = "days")) / 30)  # Approximate to convert days to months
@@ -602,7 +570,7 @@ item_trends <- monthly_purchases %>%
   do(tidy(lm(purchase_count ~ time_index, data = .))) %>%
   ungroup()
 
-# interpret slope info
+# slope info
 slope_info <- item_trends %>%
   filter(term == "time_index") %>%
   dplyr::select(itemID, estimate)
@@ -632,8 +600,8 @@ rows_with_zero_target <- training_matrix %>%
   filter(target == 0)
 
 # Check if the number of rows is greater than some value
-if(nrow(rows_with_zero_target) > 70000) {
-  rows_with_zero_target_sampled <- sample_n(rows_with_zero_target, 70000)
+if(nrow(rows_with_zero_target) > 130000) {
+  rows_with_zero_target_sampled <- sample_n(rows_with_zero_target, 130000)
 } else {
   rows_with_zero_target_sampled <- rows_with_zero_target
 }
@@ -643,7 +611,7 @@ training_matrix_updated <- bind_rows(rows_with_nonzero_target, rows_with_zero_ta
 
 # verify
 training_matrix_updated$target <- as.factor(training_matrix_updated$target)
-# Create the bar chart
+# bar chart
 ggplot(training_matrix_updated, aes(x = target)) +
   geom_bar(fill = "steelblue", color = "black", aes(y = ..count..)) +  # This plots the bars
   geom_text(stat='count', aes(label=..count.., y=..count..), vjust=-0.5, color="black") + # This adds the count labels
@@ -653,101 +621,6 @@ ggplot(training_matrix_updated, aes(x = target)) +
        y = "Count")
 ```
 
-
-### LASSO Training
-
-Only want to train on some features
-```{r}
-# Example list of features you want to train on
-selected_features <- c("userID", "itemID", "target", "total_count", "unique_purchase_weeks", "weeks_since_last_purchase", "avg_time_between_purchases", "multiple_purchases", "purchased_in_december")
-
-# Create a new dataframe with only the selected features
-training_data_selected <- training_matrix[selected_features]
-
-```
-
-
-Optimize feature selection with LASSO
-```{r}
-# Create matrix of predictor variables (exclude the target variable)
-predictors <- dplyr::select(training_data_selected, -target) %>% as.matrix()
-
-# Create a vector for the target variable
-response <- training_data_selected$target
-#str(training_data_selected$target)
-#summary(training_data_selected$target)
-response <- factor(response, levels = c(0, 1, 2, 3, 4))  # Adjust levels accordingly
-```
-
-Cross validation for optimal lamda
-```{r}
-set.seed(10903866) 
-cv_lasso <- cv.glmnet(predictors, response, alpha = 1, family = "multinomial")
-```
-
-Visualize optimal lamda and pick minimum lamda
-```{r}
-plot(cv_lasso)
-best_lambda <- cv_lasso$lambda.min  # or lambda.1se for a more regularized model
-```
-
-Optimal lamda
-```{r}
-lasso_optimal <- glmnet(predictors, response, alpha = 1, family = "multinomial", lambda = cv_lasso$lambda.1se, maxit = 200000)
-```
-
-```{r}
-lasso_optimal <- cv.glmnet(predictors, response, alpha = 1, family = "multinomial", lambda = "lambda.min")
-```
-
-
-What are the coefficients
-```{r}
-coef(lasso_optimal)
-```
-
-### Predict Using LASSO and New Matrix
-
-Preparing the test dataset
-```{r}
-# test needs to be joined with the matrix that is formed on January data as well...
-```
-
-Predict!
-```{r}
-predictors_names <- colnames(predictors)  # or manually list them if you've kept track
-
-# Select the predictors from 'test_joined'
-test_predictors <- as.matrix(test_joined[predictors_names])
-
-# If you want the predicted class directly
-predictions_class <- predict(lasso_optimal, newx = test_predictors, type = "class")
-
-test_joined$target <- as.numeric(predictions_class)  # Convert to numeric and adjust range if needed
-
-# Summary statistics for the target column
-summary(test_joined$target)
-```
-What do the predictions look like?
-```{r}
-ggplot(test_joined, aes(x = factor(target))) +
-  geom_bar(fill = "steelblue") +
-  labs(title = "Distribution of Predicted Classes", x = "Class", y = "Count")
-```
-
-Converting the resulting predictions to submission csv
-```{r}
-# Assuming 'ID' is the name of your identifier column in `test_joined`
-submission <- test_joined %>% select(uid_item_comb, target)
-
-submission <- test_joined %>%
-  # Replace underscores with dashes in uid_item_comb
-  mutate(uid_item_comb = gsub("_", "-", uid_item_comb)) %>%
-  # Select and rename columns
-  select(ID = uid_item_comb, target)
-
-write.csv(submission, "submission.csv", row.names = FALSE)
-```
 
 
 ### Asking some questions for data engineering
@@ -790,11 +663,25 @@ print(paste("Percentage of test orders purchased multiple times:", percentage_mu
 ggplot(purchase_frequencies, aes(x = factor(multiple_purchases))) +
   geom_bar(aes(y = ..prop.., group = 1), stat = "count", fill = "steelblue") +
   scale_y_continuous(labels = scales::percent) +
-  labs(title = "Distribution of Multiple Purchases",
+  labs(title = "Distribution of Multiple Purchases for Users",
        x = "Multiple Purchases (0 = Single, 1 = Multiple)",
        y = "Percentage of Purchases") +
   theme_minimal()
 ```
+
+Average times purchased for the repurchasers
+```{r}
+# Filter to include only rows with multiple purchases
+repeat_purchase_frequencies <- purchase_frequencies %>%
+  filter(multiple_purchases == 1)
+
+# Calculate the average number of purchases for users who make repeat purchases
+average_repeat_purchases <- mean(repeat_purchase_frequencies$purchase_count, na.rm = TRUE)
+
+print(paste("Average purchases for users who make repeat purchases:", average_repeat_purchases))
+```
+
+
 What is the average times purchased
 ```{r}
 total_purchases_per_combination <- orders %>%
@@ -807,21 +694,72 @@ average_purchases <- mean(total_purchases_per_combination$total_count, na.rm = T
 print(paste("Average amount of purchases per user-item combination:", average_purchases))
 ```
 
+Super users breakdown
+```{r}
+total_purchases_per_user <- purchase_frequencies %>%
+  group_by(userID) %>%
+  summarise(total_purchases = sum(purchase_count)) %>%
+  ungroup()
+
+# Sorting users by their total purchases
+sorted_users <- total_purchases_per_user %>%
+  arrange(desc(total_purchases))
+
+# Finding the top 1% threshold
+top_1_percent_index <- ceiling(nrow(sorted_users) * 0.01)
+top_1_percent_threshold <- sorted_users$total_purchases[top_1_percent_index]
+
+# Filter users above the threshold
+super_users <- sorted_users %>%
+  filter(total_purchases >= top_1_percent_threshold)
+
+num_super_users <- nrow(super_users)
+average_purchases_super_users <- mean(super_users$total_purchases)
+
+
+print(paste("Number of super users:", num_super_users))
+print(paste("Average purchases of super users:", average_purchases_super_users))
+```
+
+Super users purchase distribution
+```{r}
+
+super_users_transactions <- orders %>%
+  filter(userID %in% super_users$userID)
+
+super_users_purchases_by_date <- super_users_transactions %>%
+  mutate(month = floor_date(date, "month")) %>%
+  group_by(month) %>%
+  summarise(purchases = n()) %>%
+  ungroup()
+
+ggplot(super_users_purchases_by_date, aes(x = month, y = purchases)) +
+  geom_line(group=1, color="blue") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  labs(title = "Distribution of Super Users' Purchases Over Time",
+       x = "Month",
+       y = "Number of Purchases") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
 ### Random Forest Training
 
 Select the Predictor Variables and the Target Variable
 ```{r}
-# Define the columns to use as predictors
+# columns to use as predictors
 predictor_columns <- c("total_count", "weeks_since_last_purchase", "repeat_purchase_score", "estimate", "purchase_ratio", "avg_time_between_purchases")
 
-# Extract predictors and the target variable
+# predictors and the target variable
 predictors <- training_matrix_updated[, predictor_columns]
 response <- training_matrix_updated$target
 ```
 
 Split the Data into Training and Test Sets
 ```{r}
-set.seed(111)  # For reproducibility
+set.seed(111) 
 sample_size <- floor(0.7 * nrow(training_matrix_updated))
 train_indices <- sample(seq_len(nrow(training_matrix_updated)), size = sample_size)
 
@@ -841,26 +779,25 @@ Make Predictions and Evaluate the Model
 ```{r}
 predictions <- predict(rf_model, newdata = test_predictors)
 
-# Evaluate model performance
+# model performance
 confusionMatrix <- table(test_response, predictions)
 print(confusionMatrix)
 
-# Calculate accuracy
+# accuracy
 accuracy <- sum(diag(confusionMatrix)) / sum(confusionMatrix)
 print(paste("Accuracy:", accuracy))
 ```
 
 ```{r}
-# Assuming rf_model is your trained Random Forest model
 importance_values <- importance(rf_model)
 
-# Convert to a data frame for plotting
+# data frame conversion for plotting
 feature_importance <- data.frame(Feature = rownames(importance_values), Importance = importance_values[, "MeanDecreaseGini"])
 
-# Plotting feature importance
+# plot
 ggplot(feature_importance, aes(x = reorder(Feature, Importance), y = Importance)) +
   geom_bar(stat = "identity") +
-  coord_flip() +  # Flip coordinates for horizontal layout
+  coord_flip() +
   labs(title = "Feature 'Importance' (Mean Decrease Gini)", x = "Feature", y = "Mean Decrease in Gini Impurity") +
   theme_minimal()
 ```
@@ -874,16 +811,16 @@ Fine-Tuning and Cross-Validation
 ```{r}
 # prepare training control
 train_control <- trainControl(
-  method = "cv",           # Use k-fold cross-validation
-  number = 10,             # Number of folds in k-fold cross-validation
-  search = "grid",         # Type of parameter search (grid or random)
-  savePredictions = "final", # Save predictions for the optimal model
-  allowParallel = TRUE    # Allow parallel processing if supported
+  method = "cv",           
+  number = 10,          
+  search = "grid",       
+  savePredictions = "final", 
+  allowParallel = TRUE    
 )
 
 # parameter grid
 param_grid <- expand.grid(
-  mtry = c(2, 4, 6)  # Number of variables considered at each split
+  mtry = c(2, 4, 6) 
 )
 
 
@@ -896,10 +833,10 @@ set.seed(111)
 rf_tuned_model <- train(
   x = predictors,
   y = response,
-  method = "rf",           # Specify Random Forest method
+  method = "rf",           
   trControl = train_control,
   tuneGrid = param_grid,
-  metric = "Accuracy"      # Optimization metric (e.g., Accuracy for classification)
+  metric = "Accuracy"      
 )
 
 print(rf_tuned_model)
@@ -914,7 +851,7 @@ print(confMatrix)
 
 
 
-#### Generate the test matrix
+### Generate the test matrix
 ```{r}
 # add category to test
 test <- left_join(test, items %>% dplyr::select(itemID, category), by = "itemID")
@@ -1018,7 +955,7 @@ What is the average time between purchases of this item by the user?
 orders_with_category <- orders_with_category %>%
   arrange(userID, itemID, date)
 
-# Calculate the time difference in weeks between purchases
+# calculate the time difference in weeks between purchases
 orders_with_category <- orders_with_category %>%
   group_by(userID, itemID) %>%
   mutate(time_diff = c(NA, diff(date) / 7)) %>%
@@ -1027,7 +964,7 @@ orders_with_category <- orders_with_category %>%
   # mutate(weeks_between_purchases = difftime(date, lag(date), units = "weeks")) %>%
   # ungroup()
 
-# Calculate the average time in weeks between purchases
+# calculate the average time in weeks between purchases
 average_weeks_between_purchases <- orders_with_category %>%
   group_by(userID, itemID) %>%
   summarise(avg_time_between_purchases = mean(time_diff, na.rm = TRUE)) %>%
@@ -1052,7 +989,7 @@ summary(test$avg_time_between_purchases)
 
 Has the user bought this item more than once?
 ```{r}
-# Count purchases per User-Item Combo
+# count purchases per User-Item Combo
 purchase_counts <- orders_with_category %>%
   group_by(userID, itemID) %>%
   summarise(purchase_count = n()) %>%
@@ -1079,7 +1016,7 @@ december_purchases <- orders_with_category %>%
   filter(month(date) == 1) %>%
   distinct(userID, itemID) # Get unique user-item pairs for January
 
-# Add a binary indicator for January purchases
+# add a binary indicator for January purchases
 december_purchases <- december_purchases %>%
   mutate(purchased_in_december = 1)
 
@@ -1092,17 +1029,17 @@ summary(test$purchased_in_december)
 
 Is this item associated with repeat purchases?
 ```{r}
-# Calculate the number of purchases for each user-item combination
+# calculate the number of purchases for each user-item combination
 user_item_purchases <- orders_with_category %>%
   group_by(userID, itemID) %>%
   summarise(purchase_count = n()) %>%
   ungroup()
 
-# Determine if each purchase was a repeat purchase (more than once)
+#determine if each purchase was a repeat purchase (more than once)
 user_item_purchases <- user_item_purchases %>%
   mutate(repeat_purchase = if_else(purchase_count > 1, 1, 0))
 
-# Calculate repeat purchase frequency for each item
+# calculate repeat purchase frequency for each item
 item_repeat_frequency <- user_item_purchases %>%
   group_by(itemID) %>%
   summarise(repeat_purchase_score = sum(repeat_purchase) / n()) %>%
@@ -1139,7 +1076,7 @@ item_trends <- monthly_purchases %>%
   do(tidy(lm(purchase_count ~ time_index, data = .))) %>%
   ungroup()
 
-# interpret slope info
+# slope info
 slope_info <- item_trends %>%
   filter(term == "time_index") %>%
   dplyr::select(itemID, estimate)
